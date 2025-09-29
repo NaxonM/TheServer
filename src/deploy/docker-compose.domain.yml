@@ -1,0 +1,45 @@
+secrets:
+  cf_token:
+    file: .cf_token
+
+services:
+  traefik:
+    image: traefik:v2.9
+    container_name: ${COMPOSE_PROJECT_NAME}-traefik
+    restart: unless-stopped
+    ports:
+      - "8088:80"
+      - "8443:443"
+    environment:
+      - CLOUDFLARE_DNS_API_TOKEN_FILE=/run/secrets/cf_token
+    secrets:
+      - cf_token
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ${ACME_JSON_PATH}:/acme.json
+    command:
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      - "--certificatesresolvers.myresolver.acme.dnschallenge=true"
+      - "--certificatesresolvers.myresolver.acme.dnschallenge.provider=cloudflare"
+      - "--certificatesresolvers.myresolver.acme.email=${LETSENCRYPT_EMAIL}"
+      - "--certificatesresolvers.myresolver.acme.storage=/acme.json"
+    networks:
+      - proxy-network
+
+  proxy_app:
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=proxy-network"
+      - "traefik.http.routers.proxy_app_secure.rule=Host(`${DOMAIN}`)"
+      - "traefik.http.routers.proxy_app_secure.entrypoints=websecure"
+      - "traefik.http.routers.proxy_app_secure.tls.certresolver=myresolver"
+      - "traefik.http.services.proxy_app.loadbalancer.server.port=8000"
+      - "traefik.http.routers.proxy_app_insecure.rule=Host(`${DOMAIN}`)"
+      - "traefik.http.routers.proxy_app_insecure.entrypoints=web"
+      - "traefik.http.routers.proxy_app_insecure.middlewares=redirect-to-https@docker"
+      - "traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https"
+      - "traefik.http.middlewares.redirect-to-https.redirectscheme.port=443"
+      - "traefik.http.middlewares.redirect-to-https.redirectscheme.permanent=true"

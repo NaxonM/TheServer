@@ -1,0 +1,114 @@
+<!DOCTYPE html><html lang="en" class="h-full bg-slate-100"><head><meta charset="UTF-8"><title>Admin - File Proxy System</title><meta name="viewport" content="width=device-width, initial-scale=1.0"><script src="https://cdn.tailwindcss.com"></script><script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script></head><body class="h-full"><div x-data="admin()" x-init="init()" class="min-h-full"><header class="bg-white shadow-sm"><div class="mx-auto max-w-7xl py-4 px-4 sm:px-6 lg:px-8 flex justify-between items-center"><h1 class="text-xl font-bold tracking-tight text-slate-900">Admin Dashboard</h1><div><a href="/" class="text-sm font-medium text-slate-600 hover:text-indigo-600">Main Dashboard</a><a href="/logout" class="ml-4 text-sm font-medium text-slate-600 hover:text-indigo-600">Logout</a></div></div></header><main class="mx-auto max-w-7xl py-8 px-4 sm:px-6 lg:px-8"><div class="grid grid-cols-1 items-start gap-8 lg:grid-cols-3"><div class="lg:col-span-2 space-y-8"><section class="bg-white shadow-sm ring-1 ring-slate-900/5 rounded-lg"><header class="p-4 sm:px-6"><h2 class="text-lg font-medium leading-6 text-slate-900">User Management</h2></header><div class="overflow-x-auto border-t border-slate-200"><table class="min-w-full"><thead class="bg-slate-50"><tr><th class="py-2 px-6 text-left text-sm font-semibold text-slate-600">Username</th><th class="py-2 px-6 text-left text-sm font-semibold text-slate-600">Role</th><th class="py-2 px-6 text-right text-sm font-semibold text-slate-600">Actions</th></tr></thead><tbody class="bg-white divide-y divide-slate-200"><template x-for="user in users" :key="user.id"><tr><td class="py-3 px-6 text-sm font-medium text-slate-800" x-text="user.username"></td><td class="py-3 px-6"><span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium" :class="user.role === 'ADMIN' ? 'bg-yellow-100 text-yellow-800' : 'bg-gray-100 text-gray-800'" x-text="user.role"></span></td><td class="py-3 px-6 text-right"><button @click="deleteUser(user.id)" class="text-red-500 hover:text-red-700 font-semibold" :disabled="user.id === '{{ current_user.id }}'">Delete</button></td></tr></template></tbody></table></div></section><section class="bg-white shadow-sm ring-1 ring-slate-900/5 rounded-lg"><header class="p-4 sm:px-6 flex justify-between items-center"><h2 class="text-lg font-medium leading-6 text-slate-900">System Logs</h2><button @click="toggleLogs" type="button" class="relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-indigo-600 focus:ring-offset-2" :class="logSettings.show_logs === 'true' ? 'bg-indigo-600' : 'bg-slate-200'" role="switch" :aria-checked="logSettings.show_logs"><span class="sr-only">Show Logs</span><span aria-hidden="true" class="pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out" :class="logSettings.show_logs === 'true' ? 'translate-x-5' : 'translate-x-0'"></span></button></header><div x-show="logSettings.show_logs === 'true'" class="p-4 sm:px-6 border-t border-slate-200"><pre class="bg-slate-800 text-white text-xs p-4 rounded-md overflow-x-auto h-96" x-text="logs"></pre></div></section></div><div class="space-y-8"><section class="bg-white shadow-sm ring-1 ring-slate-900/5 rounded-lg"><header class="p-4 sm:px-6"><h2 class="text-lg font-medium leading-6 text-slate-900">Create New User</h2></header><form @submit.prevent="createUser" class="p-4 sm:px-6 border-t border-slate-200 space-y-4"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/><div><label class="block text-sm font-medium text-slate-700">Username</label><input x-model="newUser.username" type="text" required class="mt-1 block w-full p-2 border rounded-md shadow-sm border-slate-300"></div><div><label class="block text-sm font-medium text-slate-700">Password</label><input x-model="newUser.password" type="password" required class="mt-1 block w-full p-2 border rounded-md shadow-sm border-slate-300"></div><div><label class="block text-sm font-medium text-slate-700">Role</label><select x-model="newUser.role" class="mt-1 block w-full p-2 border rounded-md shadow-sm border-slate-300"><option>USER</option><option>ADMIN</option></select></div><button type="submit" class="w-full rounded-md bg-indigo-600 px-4 py-3 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500">Create User</button></form></section></div></div></main></div><script>
+function admin() {
+    return {
+        users: [],
+        newUser: { username: '', password: '', role: 'USER' },
+        logs: "Loading logs...",
+        logSettings: { show_logs: 'false' },
+        logInterval: null,
+        init() {
+            this.fetchUsers();
+            this.fetchLogSettings();
+
+            this.$effect(() => {
+                if (this.logSettings.show_logs === 'true') {
+                    this.fetchLogs();
+                    const intervalId = setInterval(() => this.fetchLogs(), 5000);
+                    return () => clearInterval(intervalId);
+                }
+            });
+        },
+        showAlert(message, isError = false) {
+            const container = document.body;
+            const alertEl = document.createElement('div');
+            alertEl.textContent = message;
+            alertEl.className = `fixed top-5 right-5 p-4 rounded-lg shadow-lg text-white text-sm z-50 transition-opacity duration-300 ${isError ? 'bg-red-500' : 'bg-green-600'}`;
+            container.appendChild(alertEl);
+            setTimeout(() => {
+                alertEl.style.opacity = '0';
+                setTimeout(() => alertEl.remove(), 300);
+            }, 4000);
+        },
+        async fetchUsers() {
+            try {
+                const response = await fetch('/api/users');
+                this.users = await response.json();
+            } catch (e) {
+                console.error('Failed to fetch users', e);
+            }
+        },
+        async createUser() {
+            const csrfToken = document.querySelector('input[name="csrf_token"]').value;
+            try {
+                const response = await fetch('/api/users', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken },
+                    body: JSON.stringify(this.newUser)
+                });
+                const result = await response.json();
+                if (response.ok) {
+                    this.showAlert(`User '${result.username}' created successfully.`);
+                    this.users.push(result);
+                    this.newUser = { username: '', password: '', role: 'USER' };
+                } else {
+                    this.showAlert(result.error || 'Failed to create user.', true);
+                }
+            } catch (e) {
+                this.showAlert('An unexpected error occurred.', true);
+            }
+        },
+        async deleteUser(userId) {
+            if (confirm('Are you sure you want to delete this user?')) {
+                const csrfToken = document.querySelector('input[name="csrf_token"]').value;
+                try {
+                    const response = await fetch(`/api/users/${userId}`, {
+                        method: 'DELETE',
+                        headers: { 'X-CSRFToken': csrfToken }
+                    });
+                    const result = await response.json();
+                    if(response.ok) {
+                        this.showAlert('User deleted.');
+                        this.users = this.users.filter(u => u.id !== userId);
+                    } else {
+                        this.showAlert(result.error || 'Failed to delete user.', true);
+                    }
+                } catch (e) {
+                    this.showAlert('An unexpected error occurred.', true);
+                }
+            }
+        },
+        async fetchLogSettings() {
+            try {
+                const response = await fetch('/api/log-settings');
+                this.logSettings = await response.json();
+            } catch (e) {
+                console.error('Failed to fetch log settings', e);
+            }
+        },
+        async fetchLogs() {
+            if (this.logSettings.show_logs !== 'true') return;
+            try {
+                const response = await fetch('/api/logs');
+                const data = await response.json();
+                this.logs = data.logs || "Log file is empty or could not be read.";
+            } catch (e) {
+                this.logs = "Failed to load logs.";
+                console.error('Failed to fetch logs', e);
+            }
+        },
+        async toggleLogs() {
+            this.logSettings.show_logs = this.logSettings.show_logs === 'true' ? 'false' : 'true';
+            const csrfToken = document.querySelector('input[name="csrf_token"]').value;
+            try {
+                await fetch('/api/log-settings', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken },
+                    body: JSON.stringify({ show_logs: this.logSettings.show_logs })
+                });
+            } catch (e) {
+                this.showAlert('Failed to save log settings.', true);
+            }
+        }
+    }
+}
+</script></body></html>

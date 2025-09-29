@@ -1,0 +1,195 @@
+<!DOCTYPE html><html lang="en" class="h-full bg-slate-100"><head><meta charset="UTF-8"><title>Dashboard - File Proxy System</title><meta name="viewport" content="width=device-width, initial-scale=1.0"><script src="https://cdn.tailwindcss.com"></script><script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script></head><body class="h-full"><div x-data="dashboard()" x-init="init()" class="min-h-full"><header class="bg-white shadow-sm"><div class="mx-auto max-w-7xl py-4 px-4 sm:px-6 lg:px-8 flex justify-between items-center"><h1 class="text-xl font-bold tracking-tight text-slate-900">File Proxy Dashboard</h1><div>{% if current_user.is_admin %}<a href="/admin" class="text-sm font-medium text-slate-600 hover:text-indigo-600">Admin Panel</a>{% endif %}<a href="/logout" class="ml-4 text-sm font-medium text-slate-600 hover:text-indigo-600">Logout</a></div></div></header><main class="mx-auto max-w-7xl py-8 px-4 sm:px-6 lg:px-8"><div class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4"><div class="overflow-hidden rounded-lg bg-white px-4 py-5 shadow sm:p-6"><dt class="truncate text-sm font-medium text-slate-500">CPU Usage</dt><dd class="mt-1 text-3xl font-semibold tracking-tight text-slate-900" x-text="stats.system ? `${stats.system.cpu_percent}%` : '...'"></dd></div><div class="overflow-hidden rounded-lg bg-white px-4 py-5 shadow sm:p-6"><dt class="truncate text-sm font-medium text-slate-500">Memory Usage</dt><dd class="mt-1 text-3xl font-semibold tracking-tight text-slate-900" x-text="stats.system ? `${stats.system.memory_percent}%` : '...'"></dd></div><div class="overflow-hidden rounded-lg bg-white px-4 py-5 shadow sm:p-6"><dt class="truncate text-sm font-medium text-slate-500">Total Traffic</dt><dd class="mt-1 text-3xl font-semibold tracking-tight text-slate-900" x-text="stats.proxy ? formatBytes(stats.proxy.total_traffic) : '...'"></dd></div><div class="overflow-hidden rounded-lg bg-white px-4 py-5 shadow sm:p-6"><dt class="truncate text-sm font-medium text-slate-500">Stored Files</dt><dd class="mt-1 text-3xl font-semibold tracking-tight text-slate-900" x-text="stats.proxy ? `${stats.proxy.stored_files_count} (${formatBytes(stats.proxy.total_stored_size)})` : '...'"></dd></div></div><div class="mt-8 grid grid-cols-1 items-start gap-8 lg:grid-cols-3"><div class="lg:col-span-2 space-y-8"><section class="bg-white shadow-sm ring-1 ring-slate-900/5 rounded-lg"><header class="p-4 sm:px-6"><h2 class="text-lg font-medium leading-6 text-slate-900">Proxy a New File</h2></header>
+<form @submit.prevent="proxyUrl" class="p-4 sm:px-6 border-t border-slate-200 space-y-4">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+    <div>
+        <label for="newUrl" class="block text-sm font-medium text-slate-700">Remote URL</label>
+        <div class="mt-1">
+            <input x-model="newUrl" id="newUrl" type="url" placeholder="https://example.com/file.zip" required class="w-full p-3 border rounded-md shadow-sm border-slate-300 focus:ring-indigo-500 focus:border-indigo-500">
+        </div>
+    </div>
+    <div>
+        <label for="newFilename" class="block text-sm font-medium text-slate-700">New Filename (Optional)</label>
+        <div class="mt-1">
+            <input x-model="newFilename" id="newFilename" type="text" placeholder="my-renamed-file.zip" class="w-full p-3 border rounded-md shadow-sm border-slate-300 focus:ring-indigo-500 focus:border-indigo-500">
+        </div>
+    </div>
+    <div>
+        <button type="submit" class="rounded-md bg-indigo-600 px-4 py-3 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500">Proxy File</button>
+    </div>
+</form>
+</section><section class="bg-white shadow-sm ring-1 ring-slate-900/5 rounded-lg"><header class="p-4 sm:px-6"><h2 class="text-lg font-medium leading-6 text-slate-900">Active Downloads</h2></header><div class="overflow-x-auto border-t border-slate-200"><table class="min-w-full"><thead class="bg-slate-50"><tr><th class="py-2 px-6 text-left text-sm font-semibold text-slate-600">File & Status</th><th class="py-2 px-6 text-left text-sm font-semibold text-slate-600">Progress</th><th class="py-2 px-6 text-right text-sm font-semibold text-slate-600">Actions</th></tr></thead><tbody class="bg-white divide-y divide-slate-200"><template x-for="dl in activeDownloads" :key="dl.id"><tr><td class="py-3 px-6"><p class="text-sm font-mono text-slate-700 truncate" x-text="dl.filename" :title="dl.filename"></p><div class="flex items-center space-x-2 mt-1"><span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium" :class="{'bg-blue-100 text-blue-800': dl.status === 'QUEUED','bg-indigo-100 text-indigo-800': dl.status === 'DOWNLOADING'}" x-text="dl.status"></span></div></td><td class="py-3 px-6"><div x-show="dl.status === 'DOWNLOADING'"><div class="w-full bg-slate-200 rounded-full h-2.5"><div class="bg-indigo-600 h-2.5 rounded-full" :style="{width: (dl.progress_bytes / (dl.size_bytes || 1) * 100) + '%'}"></div></div><p class="text-xs text-slate-500 text-right mt-1"><span x-text="`${formatBytes(dl.progress_bytes)} / ${formatBytes(dl.size_bytes)}`"></span><span x-show="dl.speed_bps > 0" class="font-medium text-indigo-600" x-text="`(${formatSpeed(dl.speed_bps)})`"></span></p></div><div x-show="dl.status === 'QUEUED'"><p class="text-sm text-slate-500">Waiting...</p></div></td><td class="py-3 px-6 text-right space-x-4"><button @click="cancelDownload(dl.filename)" class="text-red-500 hover:text-red-700 font-semibold">Cancel</button></td></tr></template><template x-if="activeDownloads.length === 0"><tr><td colspan="3" class="py-8 px-6 text-center text-sm text-slate-500">No active downloads.</td></tr></template></tbody></table></div></section><section class="bg-white shadow-sm ring-1 ring-slate-900/5 rounded-lg"><header class="p-4 sm:px-6"><h2 class="text-lg font-medium leading-6 text-slate-900">Download History</h2></header><div class="overflow-x-auto border-t border-slate-200"><table class="min-w-full"><thead class="bg-slate-50"><tr><th class="py-2 px-6 text-left text-sm font-semibold text-slate-600">File & Status</th><th class="py-2 px-6 text-left text-sm font-semibold text-slate-600">Size</th><th class="py-2 px-6 text-right text-sm font-semibold text-slate-600">Actions</th></tr></thead><tbody class="bg-white divide-y divide-slate-200"><template x-for="dl in historicalDownloads" :key="dl.id"><tr><td class="py-3 px-6"><p class="text-sm font-mono text-slate-700 truncate" x-text="dl.filename" :title="dl.filename"></p><div class="flex items-center space-x-2 mt-1"><span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium" :class="{'bg-green-100 text-green-800': dl.status === 'COMPLETED','bg-red-100 text-red-800': dl.status === 'FAILED', 'bg-yellow-100 text-yellow-800': dl.status === 'CANCELLED'}" x-text="dl.status"></span><p x-show="dl.status === 'FAILED'" class="text-xs text-red-600 truncate" x-text="dl.error_message" :title="dl.error_message"></p></div></td><td class="py-3 px-6"><p class="text-sm text-slate-500" x-text="formatBytes(dl.size_bytes)"></p></td><td class="py-3 px-6 text-right space-x-4"><a x-show="dl.status === 'COMPLETED'" :href="`/download/${dl.filename}`" class="text-indigo-600 hover:text-indigo-800 font-semibold">Download</a><button x-show="dl.status === 'COMPLETED'" @click="renameFile(dl)" class="text-blue-600 hover:text-blue-800 font-semibold">Rename</button><button @click="deleteFile(dl.filename)" class="text-red-500 hover:text-red-700 font-semibold">Delete</button></td></tr></template><template x-if="historicalDownloads.length === 0"><tr><td colspan="3" class="py-8 px-6 text-center text-sm text-slate-500">No completed downloads yet.</td></tr></template></tbody></table></div></section></div><div class="space-y-8"><section class="bg-white shadow-sm ring-1 ring-slate-900/5 rounded-lg"><header class="p-4 sm:px-6"><h2 class="text-lg font-medium leading-6 text-slate-900">Settings</h2></header><div class="p-4 sm:px-6 border-t border-slate-200 space-y-4"><div><div class="flex items-center justify-between"><label for="auto-cleanup" class="text-sm font-medium text-slate-700">Enable Auto Cleanup</label><button @click="settings.auto_cleanup_enabled = settings.auto_cleanup_enabled === 'true' ? 'false' : 'true'" type="button" class="relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-indigo-600 focus:ring-offset-2" :class="settings.auto_cleanup_enabled === 'true' ? 'bg-indigo-600' : 'bg-slate-200'" role="switch" :aria-checked="settings.auto_cleanup_enabled === 'true'"><span class="sr-only">Enable Auto Cleanup</span><span aria-hidden="true" class="pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out" :class="settings.auto_cleanup_enabled === 'true' ? 'translate-x-5' : 'translate-x-0'"></span></button></div></div><div><label class="block text-sm font-medium text-slate-700">File Cleanup Interval (minutes)</label><div class="mt-1"><input x-model="settings.cleanup_interval" type="number" class="w-full p-2 border rounded-md shadow-sm border-slate-300" :disabled="settings.auto_cleanup_enabled !== 'true'"></div></div><div><button @click="saveSettings" class="w-full rounded-md bg-emerald-600 px-4 py-3 text-sm font-semibold text-white shadow-sm hover:bg-emerald-500">Save Settings</button></div></div></section></div></div></main></div><script>
+function dashboard() {
+    return {
+        stats: { system: {}, proxy: {} },
+        downloads: [],
+        notified: new Set(),
+        settings: { cleanup_interval: 60, auto_cleanup_enabled: 'false' },
+        newUrl: "",
+        newFilename: "",
+
+        get activeDownloads() {
+            return this.downloads.filter(d => ['QUEUED', 'DOWNLOADING'].includes(d.status));
+        },
+        get historicalDownloads() {
+            return this.downloads.filter(d => ['COMPLETED', 'FAILED', 'CANCELLED'].includes(d.status));
+        },
+
+        init() {
+            this.fetchInitialData();
+            this.fetchSettings();
+            setInterval(() => this.fetchInitialData(), 5000); // Refresh stats every 5 seconds
+
+            const eventSource = new EventSource("/api/stream");
+            eventSource.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+
+                    const newDownloadsMap = new Map();
+                    [...data.active, ...data.finished].forEach(d => newDownloadsMap.set(d.id, d));
+
+                    const existingDownloadsMap = new Map(this.downloads.map(d => [d.id, d]));
+                    const mergedMap = new Map([...existingDownloadsMap, ...newDownloadsMap]);
+
+                    this.downloads = Array.from(mergedMap.values()).sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+
+                    this.downloads.forEach(dl => {
+                        if ((dl.status === 'COMPLETED' || dl.status === 'FAILED' || dl.status === 'CANCELLED') && !this.notified.has(dl.id)) {
+                            this.showAlert(`'${dl.filename}' has ${dl.status.toLowerCase()}.`, dl.status !== 'COMPLETED');
+                            this.notified.add(dl.id);
+                        }
+                    });
+                } catch (e) {
+                    console.error("Error processing SSE message:", e);
+                }
+            };
+        },
+        showAlert(message, isError = false) {
+            const container = document.body;
+            const alertEl = document.createElement('div');
+            alertEl.textContent = message;
+            alertEl.className = `fixed top-5 right-5 p-4 rounded-lg shadow-lg text-white text-sm z-50 transition-opacity duration-300 ${isError ? 'bg-red-500' : 'bg-green-600'}`;
+            container.appendChild(alertEl);
+            setTimeout(() => {
+                alertEl.style.opacity = '0';
+                setTimeout(() => alertEl.remove(), 300);
+            }, 4000);
+        },
+        async fetchInitialData() {
+            try {
+                const r = await fetch("/api/stats");
+                const data = await r.json();
+                // Update stats properties individually to be more robust.
+                this.stats.system = data.system;
+                this.stats.proxy = data.proxy;
+                this.downloads = data.proxy.downloads;
+            } catch (e) {
+                console.error("Failed to fetch initial data", e);
+            }
+        },
+        async fetchSettings(){
+            try{const r=await fetch("/api/settings");this.settings=await r.json()}
+            catch(e){console.error("Failed to fetch settings",e)}
+        },
+        async proxyUrl(){
+            if(!this.newUrl)return;
+            const csrfToken = document.querySelector('input[name="csrf_token"]').value;
+
+            const payload = {
+                url: this.newUrl,
+                filename: this.newFilename || null
+            };
+
+            try{
+                const r=await fetch("/api/proxy",{method:"POST",headers:{"Content-Type":"application/json", "X-CSRFToken": csrfToken},body:JSON.stringify(payload)});
+                const result=await r.json();
+                if(r.ok){
+                    this.showAlert(`'${result.filename}' has been queued.`);
+                    this.newUrl = "";
+                    this.newFilename = "";
+                }
+                else{this.showAlert(result.error||'An unknown error occurred.',true)}
+            }catch(e){this.showAlert('Failed to submit URL.',true)}
+        },
+        async cancelDownload(filename) {
+            const csrfToken = document.querySelector('input[name="csrf_token"]').value;
+            try {
+                const r = await fetch(`/api/files/${filename}/cancel`, {
+                    method: "POST",
+                    headers: { "X-CSRFToken": csrfToken }
+                });
+                if (r.ok) {
+                    this.showAlert(`Cancellation request sent for '${filename}'.`);
+                } else {
+                    const result = await r.json();
+                    this.showAlert(result.error || 'Failed to cancel download.', true);
+                }
+            } catch (e) {
+                this.showAlert('Failed to send cancellation request.', true);
+            }
+        },
+        async renameFile(download) {
+            const oldFilename = download.filename;
+            const newFilename = prompt(`Enter new filename for '${oldFilename}':`, oldFilename);
+
+            if (newFilename && newFilename !== oldFilename) {
+                const csrfToken = document.querySelector('input[name="csrf_token"]').value;
+                try {
+                    const r = await fetch(`/api/files/${oldFilename}/rename`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json", "X-CSRFToken": csrfToken },
+                        body: JSON.stringify({ new_filename: newFilename })
+                    });
+                    const result = await r.json();
+                    if (r.ok) {
+                        this.showAlert(`'${oldFilename}' has been renamed to '${result.new_filename}'.`);
+                        download.filename = result.new_filename;
+                    } else {
+                        this.showAlert(result.error || 'Failed to rename file.', true);
+                    }
+                } catch (e) {
+                    this.showAlert('Failed to send rename request.', true);
+                }
+            }
+        },
+        async deleteFile(filename) {
+            if (confirm(`Are you sure you want to delete '${filename}'? This cannot be undone.`)) {
+                const csrfToken = document.querySelector('input[name="csrf_token"]').value;
+                try {
+                    const response = await fetch(`/api/files/${filename}`, {
+                        method: "DELETE",
+                        headers: { "X-CSRFToken": csrfToken }
+                    });
+                    if (response.ok) {
+                        this.showAlert(`'${filename}' has been deleted.`);
+                        this.downloads = this.downloads.filter(d => d.filename !== filename);
+                    } else {
+                        const result = await response.json();
+                        this.showAlert(result.error || 'Failed to delete file.', true);
+                    }
+                } catch (e) {
+                    this.showAlert('An unexpected error occurred while deleting the file.', true);
+                }
+            }
+        },
+        async saveSettings(){
+            const csrfToken = document.querySelector('input[name="csrf_token"]').value;
+            await fetch("/api/settings",{method:"POST",headers:{"Content-Type":"application/json", "X-CSRFToken": csrfToken},body:JSON.stringify(this.settings)});
+            this.showAlert('Settings saved!');
+        },
+        formatBytes(b,d=2){
+            if(!+b)return"0 Bytes";
+            const k=1024,i=Math.floor(Math.log(b)/Math.log(k));
+            return`${parseFloat((b/Math.pow(k,i)).toFixed(d<0?0:d))} ${['B','KB','MB','GB','TB'][i]}`
+        },
+        formatSpeed(bps) {
+            if (!+bps || bps < 0) return "0 B/s";
+            const Bps = bps / 8;
+            const k = 1024;
+            const sizes = ['B/s', 'KB/s', 'MB/s', 'GB/s', 'TB/s'];
+            if (Bps === 0) return '0 B/s';
+            const i = Math.floor(Math.log(Bps) / Math.log(k));
+            return `${parseFloat((Bps / Math.pow(k, i)).toFixed(2))} ${sizes[i]}`;
+        }
+    }
+}
+</script></body></html>

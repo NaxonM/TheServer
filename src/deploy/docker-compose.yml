@@ -1,0 +1,35 @@
+services:
+  proxy_app:
+    build:
+      context: .
+      dockerfile: ./src/deploy/proxy/Dockerfile
+    container_name: ${COMPOSE_PROJECT_NAME}-app
+    restart: unless-stopped
+    volumes:
+      - ${APP_DATA_PATH:-./data}:/data
+    env_file:
+      - .env
+    depends_on:
+      - redis
+    networks:
+      - proxy-network
+
+  redis:
+    image: "redis:alpine"
+    restart: unless-stopped
+    container_name: ${COMPOSE_PROJECT_NAME}-redis
+    networks:
+      - proxy-network
+
+  cleanup_cron:
+    build:
+      context: .
+      dockerfile: ./src/deploy/cron/Dockerfile
+    container_name: ${COMPOSE_PROJECT_NAME}-cron
+    restart: unless-stopped
+    volumes:
+      - ${APP_DATA_PATH:-./data}:/data
+
+networks:
+  proxy-network:
+    driver: bridge
