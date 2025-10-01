@@ -35,11 +35,13 @@ def create_app(config_class=Config):
     from .blueprints.auth import auth_bp
     from .blueprints.api import api_bp
     from .blueprints.admin import admin_bp
+    from .blueprints.porn_fetch import porn_fetch_bp
 
     app.register_blueprint(main_bp)
     app.register_blueprint(auth_bp)
     app.register_blueprint(api_bp, url_prefix='/api')
     app.register_blueprint(admin_bp, url_prefix='/admin')
+    app.register_blueprint(porn_fetch_bp)
 
     # Configure logging
     log_dir = app.config['LOG_DIR']
@@ -60,6 +62,30 @@ def create_app(config_class=Config):
 
     # Setup database and start background tasks
     with app.app_context():
+        from sqlalchemy import inspect, text
+        from sqlalchemy.exc import OperationalError
+
+        inspector = inspect(db.engine)
+        # Check if table exists before inspecting columns, to avoid errors on first-ever run
+        if 'download_log' in inspector.get_table_names():
+            columns = [c['name'] for c in inspector.get_columns('download_log')]
+            if 'source' not in columns:
+                app.logger.info("Database migration: 'source' column not found. Adding it now.")
+                try:
+                    with db.engine.connect() as connection:
+                        connection.execute(text('ALTER TABLE download_log ADD COLUMN source VARCHAR(50)'))
+                        connection.execute(text("UPDATE download_log SET source = 'PROXY' WHERE source IS NULL"))
+                        connection.commit()
+                    app.logger.info("Database migration complete.")
+                except OperationalError as e:
+                    # This handles a race condition where another worker adds the column
+                    # between the check and the ALTER TABLE command.
+                    if "duplicate column name" in str(e).lower():
+                        app.logger.info("Database migration: 'source' column was added by another process. Skipping.")
+                        db.session.rollback()
+                    else:
+                        raise e
+
         setup_database(app)
 
     cleanup_thread = threading.Thread(target=cleanup_thread_target, args=(app,))

@@ -10,7 +10,7 @@ import time
 import os
 import requests
 
-from ..models import db, DownloadLog, Setting, DownloadStatus, User, UserRole
+from ..models import db, DownloadLog, Setting, DownloadStatus, User, UserRole, DownloadSource
 from ..worker import download_thread_target
 from ..helpers import get_filename_from_headers, is_safe_url, read_last_n_lines
 from ..stats_collector import system_stats
@@ -30,13 +30,13 @@ def api_stats():
             "memory_percent": system_stats['memory_percent']
         }
 
-    downloads = DownloadLog.query.order_by(DownloadLog.created_at.desc()).all()
+    downloads = DownloadLog.query.filter_by(source=DownloadSource.PROXY).order_by(DownloadLog.created_at.desc()).all()
     all_downloads = [d.to_dict() for d in downloads]
 
-    total_traffic = db.session.query(db.func.sum(DownloadLog.size_bytes)).filter(DownloadLog.status == DownloadStatus.COMPLETED).scalar() or 0
+    total_traffic = db.session.query(db.func.sum(DownloadLog.size_bytes)).filter(DownloadLog.status == DownloadStatus.COMPLETED, DownloadLog.source == DownloadSource.PROXY).scalar() or 0
 
-    stored_files_count = DownloadLog.query.filter_by(status=DownloadStatus.COMPLETED).count()
-    total_stored_size = db.session.query(db.func.sum(DownloadLog.size_bytes)).filter(DownloadLog.status == DownloadStatus.COMPLETED).scalar() or 0
+    stored_files_count = DownloadLog.query.filter_by(status=DownloadStatus.COMPLETED, source=DownloadSource.PROXY).count()
+    total_stored_size = db.session.query(db.func.sum(DownloadLog.size_bytes)).filter(DownloadLog.status == DownloadStatus.COMPLETED, DownloadLog.source == DownloadSource.PROXY).scalar() or 0
 
     return jsonify({
         "system": current_stats,
@@ -101,7 +101,8 @@ def start_proxy_download():
             filename=filename,
             remote_url=remote_url,
             size_bytes=total_size,
-            status=DownloadStatus.QUEUED
+            status=DownloadStatus.QUEUED,
+            source=DownloadSource.PROXY
         )
         db.session.add(log_entry)
         db.session.commit()
@@ -213,10 +214,12 @@ def stream():
         while True:
             with app.app_context():
                 active_downloads = DownloadLog.query.filter(
+                    DownloadLog.source == DownloadSource.PROXY,
                     DownloadLog.status.in_([DownloadStatus.QUEUED, DownloadStatus.DOWNLOADING])
                 ).order_by(DownloadLog.created_at.desc()).all()
 
                 finished_downloads = DownloadLog.query.filter(
+                    DownloadLog.source == DownloadSource.PROXY,
                     DownloadLog.status.in_([DownloadStatus.COMPLETED, DownloadStatus.FAILED, DownloadStatus.CANCELLED])
                 ).order_by(DownloadLog.updated_at.desc()).limit(5).all()
 
@@ -334,3 +337,175 @@ def manage_log_settings():
 
     setting = Setting.query.filter_by(key=log_setting_key).first()
     return jsonify({"show_logs": setting.value if setting else 'false'})
+
+@api_bp.route('/porn-fetch/status', methods=['GET'])
+@login_required
+def get_porn_fetch_status():
+    """
+    Acts as a secure proxy to fetch the status of active downloads from the porn-fetch service.
+    """
+    try:
+        response = requests.get("http://porn-fetch:5000/api/status", timeout=5)
+        response.raise_for_status()
+        return jsonify(response.json())
+    except requests.exceptions.RequestException as e:
+        current_app.logger.error(f"Could not connect to porn-fetch status endpoint: {e}")
+        return jsonify([]), 503 # Return an empty list and a Service Unavailable status
+
+@api_bp.route('/porn-fetch/settings', methods=['GET', 'POST'])
+@login_required
+def get_porn_fetch_settings():
+    """
+    Acts as a secure proxy to get or update settings for the porn-fetch service.
+    """
+    try:
+        if request.method == 'POST':
+            data = request.get_json()
+            response = requests.post("http://porn-fetch:5000/api/settings", json=data, timeout=10)
+        else: # GET
+            response = requests.get("http://porn-fetch:5000/api/settings", timeout=10)
+
+        response.raise_for_status()
+        return jsonify(response.json()), response.status_code
+
+    except requests.exceptions.RequestException as e:
+        current_app.logger.error(f"Could not connect to porn-fetch settings endpoint: {e}")
+        if e.response:
+            try:
+                return jsonify(e.response.json()), e.response.status_code
+            except json.JSONDecodeError:
+                return jsonify({"error": "An unknown error occurred in the porn-fetch service."}), e.response.status_code
+        return jsonify({"error": "An error occurred while communicating with the porn-fetch service."}), 503
+
+@api_bp.route('/fetch-videos', methods=['POST'])
+@login_required
+def fetch_videos():
+    """
+    Acts as a secure proxy to fetch and stream a list of videos from the porn-fetch service.
+    """
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "Invalid JSON payload"}), 400
+
+    try:
+        # Use stream=True to handle the response as a stream
+        response = requests.post(
+            "http://porn-fetch:5000/api/fetch-videos",
+            json=data,
+            stream=True,
+            timeout=45  # Timeout for establishing the connection
+        )
+
+        # Check if the connection was successful before attempting to stream
+        response.raise_for_status()
+
+        def generate():
+            for chunk in response.iter_content(chunk_size=1024):
+                yield chunk
+
+        # Forward the headers and stream the content
+        return Response(generate(), content_type=response.headers['Content-Type'])
+
+    except requests.exceptions.RequestException as e:
+        current_app.logger.error(f"Could not connect to porn-fetch fetch-videos endpoint: {e}")
+        # Try to return a more specific error from the service if possible, otherwise a generic one
+        if e.response:
+            try:
+                return jsonify(e.response.json()), e.response.status_code
+            except json.JSONDecodeError:
+                 return jsonify({"error": "An unknown error occurred in the porn-fetch service."}), e.response.status_code
+        return jsonify({"error": "An error occurred while communicating with the porn-fetch service."}), 503
+
+@api_bp.route('/porn-fetch/batch-download', methods=['POST'])
+@login_required
+def porn_fetch_batch_download():
+    """
+    Acts as a secure proxy to send a batch download request to the porn-fetch service.
+    """
+    data = request.get_json()
+    if not data or 'urls' not in data:
+        return jsonify({"error": "Invalid JSON payload, 'urls' key missing."}), 400
+
+    try:
+        # Forward the payload to the porn-fetch service's download endpoint
+        response = requests.post("http://porn-fetch:5000/api/download", json=data, timeout=10)
+        response.raise_for_status()
+        return jsonify(response.json()), response.status_code
+    except requests.exceptions.RequestException as e:
+        current_app.logger.error(f"Could not connect to porn-fetch download endpoint for batch: {e}")
+        if e.response:
+            try:
+                return jsonify(e.response.json()), e.response.status_code
+            except json.JSONDecodeError:
+                return jsonify({"error": "An unknown error occurred in the porn-fetch service."}), e.response.status_code
+        return jsonify({"error": "An error occurred while communicating with the porn-fetch service."}), 503
+
+@api_bp.route('/porn-fetch/video-info', methods=['POST'])
+@login_required
+def porn_fetch_video_info():
+    """
+    Acts as a secure proxy to fetch video metadata from the porn-fetch service.
+    """
+    data = request.get_json()
+    if not data or 'url' not in data:
+        return jsonify({"error": "Missing 'url' in request body"}), 400
+
+    try:
+        response = requests.post("http://porn-fetch:5000/api/video-info", json=data, timeout=20)
+        response.raise_for_status()
+        return jsonify(response.json()), response.status_code
+    except requests.exceptions.RequestException as e:
+        current_app.logger.error(f"Could not connect to porn-fetch video-info endpoint: {e}")
+        if e.response:
+            try:
+                return jsonify(e.response.json()), e.response.status_code
+            except json.JSONDecodeError:
+                return jsonify({"error": "An unknown error occurred in the porn-fetch service."}), e.response.status_code
+        return jsonify({"error": "An error occurred while communicating with the porn-fetch service."}), 503
+
+
+@api_bp.route('/internal/register-download', methods=['POST'])
+@csrf.exempt
+def register_external_download():
+    """
+    An internal endpoint for other services to register an already-completed download.
+    This endpoint should not be exposed to the public.
+    """
+    data = request.json
+    filename = data.get('filename')
+    remote_url = data.get('remote_url')
+    size_bytes = data.get('size_bytes')
+    source_url = data.get('source_url')
+    thumbnail = data.get('thumbnail')
+
+    if filename is None or remote_url is None or size_bytes is None:
+        return jsonify({"error": "Missing required data: filename, remote_url, and size_bytes are required."}), 400
+
+    # Sanitize filename
+    safe_filename = secure_filename(filename)
+    if not safe_filename:
+        return jsonify({"error": "Provided filename is invalid."}), 400
+
+    # Check if a log for this file already exists
+    if DownloadLog.query.filter_by(filename=safe_filename).first():
+        current_app.logger.info(f"Internal registration for '{safe_filename}' skipped: file already exists.")
+        return jsonify({"message": "File already registered."}), 200
+
+    try:
+        log_entry = DownloadLog(
+            filename=safe_filename,
+            remote_url=remote_url,
+            size_bytes=int(size_bytes),
+            status=DownloadStatus.COMPLETED,
+            source=DownloadSource.PORN_FETCH,
+            source_url=source_url,
+            thumbnail=thumbnail
+        )
+        db.session.add(log_entry)
+        db.session.commit()
+        current_app.logger.info(f"Internally registered new download: '{safe_filename}'")
+        return jsonify(log_entry.to_dict()), 201
+    except Exception as e:
+        db.session.rollback()
+        current_app.logger.error(f"Error during internal registration for '{safe_filename}': {e}", exc_info=True)
+        return jsonify({"error": "An internal error occurred during registration."}), 500

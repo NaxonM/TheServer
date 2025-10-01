@@ -7,10 +7,24 @@ services:
     restart: unless-stopped
     volumes:
       - ${APP_DATA_PATH:-./data}:/data
+      - downloads:/data/downloads  # Mount the shared volume
     env_file:
       - .env
     depends_on:
       - redis
+      - porn-fetch # Ensure porn-fetch starts first
+    networks:
+      - proxy-network
+
+  porn-fetch:
+    build:
+      context: ./PF-Repo
+      dockerfile: Dockerfile
+    image: porn-fetch-api
+    container_name: ${COMPOSE_PROJECT_NAME}-porn-fetch
+    restart: unless-stopped
+    volumes:
+      - downloads:/downloads # Mount the shared volume
     networks:
       - proxy-network
 
@@ -25,10 +39,17 @@ services:
     build:
       context: .
       dockerfile: ./src/deploy/cron/Dockerfile
+    init: true
     container_name: ${COMPOSE_PROJECT_NAME}-cron
     restart: unless-stopped
+    cap_add:
+      - SYS_ADMIN # Grant permissions for process management
+      - SYS_PTRACE # Add capability to fix cron permission errors
     volumes:
       - ${APP_DATA_PATH:-./data}:/data
+
+volumes:
+  downloads: # Define the shared volume
 
 networks:
   proxy-network:

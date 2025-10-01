@@ -13,3 +13,6 @@ markdown
 rich
 mutagen
 spankbang_api
+Flask
+Werkzeug
+gunicorn

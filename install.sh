@@ -34,12 +34,15 @@ log_error() {
 }
 
 get_public_ip() {
-    # Attempt to fetch the public IPv4 address from a reliable service.
-    if IP_ADDR=$(curl -4 -s --fail --max-time 5 "https://ifconfig.me"); then
-        echo "$IP_ADDR"
-    else
-        log_error "Could not determine public IPv4 address. Please check your internet connection."
-    fi
+    # Attempt to fetch the public IPv4 address from a list of reliable services.
+    local services=("https://ifconfig.me" "https://api.ipify.org" "https://icanhazip.com" "https://ipecho.net/plain")
+    for service in "${services[@]}"; do
+        if IP_ADDR=$(curl -4 -s --fail --max-time 5 "$service"); then
+            echo "$IP_ADDR"
+            return 0 # Success
+        fi
+    done
+    return 1 # Failure
 }
 
 # --- Core Logic Functions ---
@@ -60,6 +63,9 @@ check_dependencies() {
     log "Checking for dependencies..."
     if ! command -v docker &> /dev/null; then
         log_error "Docker is not installed. Please install it to continue."
+    fi
+    if ! docker compose version &> /dev/null; then
+        log_error "Docker Compose V2 is not available. Please update Docker to a version that includes the 'compose' command."
     fi
     if ! docker info &> /dev/null; then
         log_error "The Docker daemon is not running. Please start Docker and try again."
@@ -98,9 +104,15 @@ handle_config() {
         fi
     else
         log "Proceeding with IP-based setup."
-        log "Detecting public IP address..."
-        config_domain=$(get_public_ip)
-        log_success "Detected public IP: $config_domain"
+        log "Attempting to automatically detect public IP address..."
+        if ! config_domain=$(get_public_ip); then
+            log "${C_YELLOW}Warning: Could not automatically determine public IP address.${C_RESET}"
+            read -p "Please enter your server's public IPv4 address manually: " config_domain
+            if [ -z "$config_domain" ]; then
+                log_error "Public IP address cannot be empty for IP-based setup."
+            fi
+        fi
+        log_success "Using public IP: $config_domain"
     fi
 
     read -p "Enter the dashboard admin username: " config_admin_user
@@ -198,7 +210,9 @@ install_system() {
     log "[2/4] Initializing configuration..."
     handle_config
 
-    log "[3/4] Structuring files for deployment..."
+    log "[3/4] Installing Porn_Fetch service..."
+
+    log "[4/4] Structuring files for deployment..."
     # If new/updated compose files exist in src/deploy, move them to the root.
     # This step is crucial for first-time setup and for updates that change the compose files.
     if [ -d "src/deploy" ] && [ -f "src/deploy/docker-compose.yml" ]; then
@@ -240,6 +254,10 @@ install_system() {
         log "Enabling IP-based setup."
     fi
 
+    log "Building porn-fetch-cli image..."
+    docker compose $compose_files build porn-fetch
+
+    log "Starting all services..."
     docker compose $compose_files up -d --build --remove-orphans
 
     echo

@@ -19,6 +19,7 @@ from src.backend.CLI_model_feature_addon import *
 import src.backend.shared_functions as shared_functions
 from base_api.modules.errors import (InvalidProxy, ProxySSLError)
 from rich.progress import Progress, BarColumn, TextColumn, SpinnerColumn, TimeElapsedColumn, TimeRemainingColumn
+from downloader import HeadlessDownloader
 
 try:
     import av
@@ -483,44 +484,47 @@ Bugs can be reported at: https://github.com/EchterAlsFake/Porn_Fetch/issues/
                     conf.write(config_file)
 
     def process_video(self, url=None, video=None, batch=False, remove_total_bar=False):
+        # This function is now a wrapper around the headless downloader
         self.semaphore.acquire()
-        if video is None:
-            url = url or input("Enter Video URL: ")
-            video = shared_functions.check_video(url=url)
+        try:
+            if video is None:
+                url = url or input("Enter Video URL: ")
+                video = shared_functions.check_video(url=url)
 
-        attrs = shared_functions.load_video_attributes(video)
-        author = attrs.get('author', '')
-        title = attrs.get('title', 'video')
+            attrs = shared_functions.load_video_attributes(video)
+            title = attrs.get('title', 'video')
 
-        # Determine output path
-        out_dir = self.output_path or os.getcwd()
-        if self.directory_system:
-            author_dir = os.path.join(out_dir, author)
-            os.makedirs(author_dir, exist_ok=True)
-            out_file = os.path.join(author_dir, f"{title}.mp4")
-        else:
-            out_file = os.path.join(out_dir, f"{title}.mp4")
+            # Create per-video task for the UI
+            task_id = self.progress.add_task(
+                description=f"Downloading: {title}",
+                total=None,
+            )
 
-        if os.path.exists(out_file):
-            logger.debug(f"File exists, skipping: {out_file}")
-            print(f"Skipping existing file: {out_file}")
+            # The headless downloader will handle the actual file operations
+            headless_downloader = HeadlessDownloader()
+            out_file, status = headless_downloader.download_video_by_url(url=video.url, output_dir=self.output_path)
+
+            if status == "Skipped":
+                print(f"Skipping existing file: {out_file}")
+            else:
+                print(f"{Fore.LIGHTGREEN_EX}[+]{Fore.LIGHTYELLOW_EX} Download finished: {title}")
+
+        except Exception as e:
+            print(f"{Fore.LIGHTRED_EX}Error processing video {url}: {e}")
+        finally:
             self.semaphore.release()
-            self.menu()
-
-        # Create per-video task
-        task_id = self.progress.add_task(
-            description=f"Downloading: {title}",
-            total=None,
-        )
-
-        dl_thread = threading.Thread(
-            target=self.download,
-            args=(video, out_file, task_id, remove_total_bar),
-            daemon=True,
-        )
-        dl_thread.start()
-        if batch:
-            dl_thread.join()
+            # Clean up the per-video bar
+            if 'task_id' in locals() and self.progress.tasks:
+                try:
+                    self.progress.remove_task(task_id)
+                except Exception:
+                    pass # Task might already be gone
+            if batch:
+                # In batch mode, we don't return to the menu
+                pass
+            else:
+                # In interactive mode, this might need adjustment depending on desired flow
+                pass
 
     def process_video_with_error_handling(self, video, batch, ignore_errors, remove_total_bar):
         try:
@@ -677,82 +681,6 @@ Bugs can be reported at: https://github.com/EchterAlsFake/Porn_Fetch/issues/
         logger.debug(f"{return_color()}Done!")
         self.iterate_generator(videos)
 
-    def download(self, video, output_path, task_id, remove_total_bar=False):
-        try:
-            # Detect whether this is a byte-based download
-            is_byte_download = (
-                isinstance(video, shared_functions.hq_Video)
-                or isinstance(video, shared_functions.ep_Video)
-            )
-
-            def callback_wrapper(pos, total):
-                if is_byte_download:
-                    tot_mb = (total / (1024 ** 2)) if total and total > 0 else None
-                    comp_mb = (pos / (1024 ** 2))
-                    if tot_mb is not None:
-                        # avoid accidental 'finished' due to float/rounding
-                        if comp_mb >= tot_mb:
-                            comp_mb = tot_mb - 1e-6
-
-                        self.progress.update(task_id, total=round(tot_mb), completed=round(comp_mb))
-                    else:
-                        # keep task indeterminate until we know total size
-                        self.progress.update(task_id)
-                else:
-                    self.progress.update(task_id, total=total, completed=pos)
-                    if self.task_total_progress is not None:
-                        self.progress.update(self.task_total_progress, advance=1)
-
-            # Kick off the right download call
-            if isinstance(video, shared_functions.ph_Video):
-                video.download(path=output_path,
-                    quality=self.quality,
-                    downloader=self.threading_mode,
-                    display=callback_wrapper,
-                    remux=remux)
-            elif is_byte_download:
-                # HQPorner / Eporner
-                video.download(
-                    path=output_path,
-                    quality=self.quality,
-                    callback=callback_wrapper,
-                    no_title=True,
-                )
-            else:
-                # other types (e.g. ep_Video/hq_Video fall through here if needed)
-                video.download(
-                    path=output_path,
-                    quality=self.quality,
-                    downloader=self.threading_mode,
-                    callback=callback_wrapper,
-                    remux=remux,
-                    no_title=True,
-                )
-
-        finally:
-            logger.debug(f"Finished download: {video.title}")
-            if conf["Video"]["write_metadata"] == "true":
-                if remux:
-                    shared_functions.write_tags(
-                        path=output_path,
-                        data=shared_functions.load_video_attributes(video))
-
-
-            # Release semaphore and log
-            t = next((t for t in self.progress.tasks if t.id == task_id), None)
-            if t and t.total is not None:
-                self.progress.update(task_id, completed=t.total)
-            self.finished_downloading += 1
-            self.semaphore.release()
-            print(f"{Fore.LIGHTGREEN_EX}[+]{Fore.LIGHTYELLOW_EX} Download finished: {video.title}")
-
-            # Clean up the per-video bar; leave total bar intact for segments
-            try:
-                self.progress.remove_task(task_id)
-                if remove_total_bar and not is_byte_download:
-                    self.progress.remove_task(self.task_total_progress)
-            except ValueError:
-                pass
 
     def _update_progress(self):
         # Exit once every task is finished (no live tasks left).
