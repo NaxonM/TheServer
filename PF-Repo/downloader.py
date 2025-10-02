@@ -118,7 +118,7 @@ class HeadlessDownloader:
         # If slugify results in an empty string (e.g., title was all special characters), fallback.
         return safe_title if safe_title else "video"
 
-    def _select_best_available_quality(self, requested_quality, available_qualities, video_type=None):
+    def _select_best_available_quality(self, requested_quality, available_qualities):
         """
         Selects the best possible quality from the available list based on the requested quality.
         - 'best': Highest available quality.
@@ -429,20 +429,7 @@ class HeadlessDownloader:
                 video_attrs = shared_functions.load_video_attributes(video)
 
             available_qualities = video_attrs.get('qualities', [])
-            # Determine video type for quality selection
-            video_type = None
-            if isinstance(video, shared_functions.ep_Video):
-                video_type = 'eporner'
-            elif isinstance(video, (shared_functions.xv_Video, shared_functions.xn_Video)):
-                video_type = 'xvideos'
-            elif isinstance(video, shared_functions.ph_Video):
-                video_type = 'pornhub'
-            elif isinstance(video, shared_functions.hq_Video):
-                video_type = 'hqporner'
-            elif isinstance(video, shared_functions.yp_Video):
-                video_type = 'youporn'
-            
-            final_quality = self._select_best_available_quality(quality, available_qualities, video_type)
+            final_quality = self._select_best_available_quality(quality, available_qualities)
 
             if final_quality is None:
                 logger.error(f"Could not determine a valid download quality for {remote_url} with requested quality '{quality}'. Available: {available_qualities}")
@@ -451,291 +438,44 @@ class HeadlessDownloader:
                 logger.warning(f"Quality '{quality}' not found for {remote_url}. Available: {available_qualities}. Falling back to '{final_quality}'.")
 
             # --- Download Execution ---
-            if isinstance(video, (shared_functions.xv_Video, shared_functions.xn_Video)):
-                download_dir = os.path.dirname(output_path)
-                os.makedirs(download_dir, exist_ok=True)
-                files_before = set(os.listdir(download_dir))
+            download_dir = os.path.dirname(output_path)
+            os.makedirs(download_dir, exist_ok=True)
+            
+            try:
+                # Generic download call
+                video.download(path=output_path, quality=final_quality, callback=progress_callback)
+                if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
+                    raise FileNotFoundError(f"Download failed to create file: {output_path}")
+            except Exception as e:
+                logger.warning(f"Direct download to '{output_path}' failed: {e}. Falling back to temporary directory.")
                 
-                # For XVideos, we need to validate the quality against available qualities
-                if isinstance(video, shared_functions.xv_Video):
-                    # Get available qualities from the video object
-                    available_qualities = []
-                    if hasattr(video, 'qualities') and video.qualities:
-                        if isinstance(video.qualities, dict):
-                            available_qualities = list(video.qualities.keys())
-                        elif isinstance(video.qualities, (list, tuple)):
-                            available_qualities = [str(q) for q in video.qualities]
-                    
-                    # If we have available qualities, validate the final_quality
-                    if available_qualities and final_quality not in available_qualities:
-                        # Try to find a valid quality
-                        quality_found = False
-                        for quality in available_qualities:
-                            if str(quality).lower() == str(final_quality).lower():
-                                final_quality = quality
-                                quality_found = True
-                                break
-                        
-                        if not quality_found:
-                            # Use the first available quality as fallback
-                            final_quality = available_qualities[0]
-                            logger.warning(f"Requested quality not available for XVideos, using: {final_quality}")
-                    
-                    # Additional check: try to get the actual available qualities from the video
-                    try:
-                        if hasattr(video, 'get_available_qualities'):
-                            actual_qualities = video.get_available_qualities()
-                            if actual_qualities and final_quality not in actual_qualities:
-                                # Find the closest match
-                                for q in actual_qualities:
-                                    if str(q).lower() == str(final_quality).lower():
-                                        final_quality = q
-                                        break
-                                else:
-                                    # Use the first available quality
-                                    final_quality = actual_qualities[0]
-                                    logger.warning(f"Quality validation failed for XVideos, using: {final_quality}")
-                    except Exception as e:
-                        logger.warning(f"Could not validate XVideos qualities: {e}")
+                temp_dir = os.path.join(download_dir, f"temp_{download_id}")
+                os.makedirs(temp_dir, exist_ok=True)
+                files_before = set(os.listdir(temp_dir))
                 
                 try:
-                    # Try downloading to directory first
-                    video.download(path=download_dir, quality=final_quality, callback=progress_callback, downloader=self.threading_mode)
-                    logger.info(f"Download to directory completed for {remote_url}")
-                except Exception as e:
-                    logger.warning(f"Download to directory failed, trying direct download to file: {e}")
-                    # Fallback: try downloading directly to the target file
-                    try:
-                        video.download(path=output_path, quality=final_quality, callback=progress_callback, downloader=self.threading_mode)
-                        logger.info(f"Successfully downloaded directly to {output_path}")
-                    except Exception as fallback_e:
-                        logger.error(f"Both directory and direct download failed: {fallback_e}")
-                        # Try one more fallback: download with a different quality
-                        try:
-                            logger.info("Trying download with different quality as final fallback")
-                            # Try with the first available quality or a default
-                            fallback_quality = 'best' if final_quality != 'best' else 'worst'
-                            video.download(path=download_dir, quality=fallback_quality, callback=progress_callback, downloader=self.threading_mode)
-                        except Exception as final_e:
-                            logger.error(f"All download methods failed: {final_e}")
-                            raise fallback_e
-                else:
-                    # Check if any new files were created
-                    files_after = set(os.listdir(download_dir))
+                    video.download(path=temp_dir, quality=final_quality, callback=progress_callback)
+                    files_after = set(os.listdir(temp_dir))
                     new_files = files_after - files_before
                     
-                    # Also check if the target file was created directly
-                    if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
-                        logger.info(f"Download file exists at expected location: {output_path}")
-                    elif len(new_files) == 1:
-                        created_filename = new_files.pop()
-                        created_filepath = os.path.join(download_dir, created_filename)
-                        logger.info(f"Library created file '{created_filename}', renaming to '{os.path.basename(output_path)}'")
-                        os.rename(created_filepath, output_path)
-                    elif len(new_files) == 0:
-                        # Look for any video files that might have been created (including existing ones)
-                        video_extensions = ['.mp4', '.avi', '.mov', '.mkv', '.webm', '.flv']
-                        video_files = []
-                        for file in os.listdir(download_dir):
-                            if any(file.lower().endswith(ext) for ext in video_extensions):
-                                file_path = os.path.join(download_dir, file)
-                                if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
-                                    # Check if this file was recently modified (within last 5 minutes)
-                                    import time
-                                    file_mtime = os.path.getmtime(file_path)
-                                    current_time = time.time()
-                                    if current_time - file_mtime < 300:  # 5 minutes
-                                        video_files.append((file, file_path, file_mtime))
-                        
-                        if video_files:
-                            # Sort by modification time (most recent first)
-                            video_files.sort(key=lambda x: x[2], reverse=True)
-                            most_recent_file = video_files[0]
-                            logger.info(f"Found recently created video file: {most_recent_file[0]}, moving to {os.path.basename(output_path)}")
-                            os.rename(most_recent_file[1], output_path)
-                        else:
-                            raise FileNotFoundError(f"Download for {remote_url} failed to create any new files in {download_dir}.")
-                    else:
-                        logger.warning(f"Multiple new files created ({len(new_files)}), attempting to locate video file")
-                        # Multiple files created, find the video file
-                        video_extensions = ['.mp4', '.avi', '.mov', '.mkv', '.webm', '.flv']
-                        video_file = None
-                        for file in new_files:
-                            if any(file.lower().endswith(ext) for ext in video_extensions):
-                                video_file = file
-                                break
-                        
-                        if video_file:
-                            created_filepath = os.path.join(download_dir, video_file)
-                            logger.info(f"Found multiple files, using video file '{video_file}', renaming to '{os.path.basename(output_path)}'")
-                            os.rename(created_filepath, output_path)
-                            # Clean up other files
-                            for file in new_files:
-                                if file != video_file:
-                                    other_file = os.path.join(download_dir, file)
-                                    try:
-                                        os.remove(other_file)
-                                        logger.info(f"Cleaned up extra file: {file}")
-                                    except OSError as cleanup_e:
-                                        logger.warning(f"Could not clean up extra file {file}: {cleanup_e}")
-                        else:
-                            raise FileNotFoundError(f"Download for {remote_url} created multiple files but no recognizable video file in {download_dir}.")
+                    if not new_files:
+                        raise FileNotFoundError(f"Fallback download created no new files in {temp_dir}")
 
-            elif isinstance(video, (shared_functions.hq_Video, shared_functions.ep_Video, shared_functions.yp_Video)):
-                # For Eporner, use the quality directly as it should be in the correct format (best, half, worst)
-                if isinstance(video, shared_functions.ep_Video):
-                    quality_key = final_quality  # Eporner uses 'best', 'half', 'worst' directly
-                else:
-                    # For HQPorner/YouPorn, try to find the correct quality key
-                    quality_key = final_quality
-                    if hasattr(video, 'qualities') and isinstance(video.qualities, dict):
-                        # Find the key corresponding to the selected quality value (e.g., find '1080' from '1080p')
-                        for key, value in video.qualities.items():
-                            if str(value) == str(final_quality):
-                                quality_key = key
-                                break
-                        else:
-                            # If exact match not found, try to find the closest quality
-                            available_qualities = list(video.qualities.keys())
-                            logger.warning(f"Exact quality '{final_quality}' not found in available qualities: {available_qualities}")
-                            
-                            # Try to find a quality that contains the resolution number
-                            quality_num = re.sub(r'[^0-9]', '', str(final_quality))
-                            if quality_num:
-                                for key in available_qualities:
-                                    if quality_num in str(key):
-                                        quality_key = key
-                                        logger.info(f"Using closest quality match: '{quality_key}' for requested '{final_quality}'")
-                                        break
-                                else:
-                                    # If no numeric match, use the first available quality
-                                    quality_key = available_qualities[0]
-                                    logger.warning(f"No quality match found, using first available: '{quality_key}'")
-                            else:
-                                # If no numeric part, use the first available quality
-                                quality_key = available_qualities[0]
-                                logger.warning(f"No numeric quality found, using first available: '{quality_key}'")
-                            
-                            # Additional validation: make sure the quality_key exists in the qualities dict
-                            if quality_key not in video.qualities:
-                                logger.warning(f"Selected quality key '{quality_key}' not found in qualities dict, using first available")
-                                quality_key = available_qualities[0]
-                
-                try:
-                    video.download(path=output_path, quality=quality_key, callback=progress_callback, no_title=True)
-                    # Verify the file was created successfully
-                    if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
-                        raise FileNotFoundError(f"HQPorner/Eporner/YouPorn download failed to create file: {output_path}")
-                except Exception as e:
-                    logger.warning(f"HQPorner/Eporner/YouPorn direct download failed: {e}")
-                    # Fallback: try downloading to a temporary directory similar to XNXX/XVIDEOS
-                    download_dir = os.path.dirname(output_path)
-                    temp_dir = os.path.join(download_dir, f"temp_{download_id}")
-                    
-                    try:
-                        os.makedirs(temp_dir, exist_ok=True)
-                        files_before = set(os.listdir(temp_dir))
-                        video.download(path=temp_dir, quality=quality_key, callback=progress_callback, no_title=True)
-                        files_after = set(os.listdir(temp_dir))
-                        new_files = files_after - files_before
-                        
-                        if new_files:
-                            # Move the created file to the final location
-                            created_filename = list(new_files)[0]
-                            created_filepath = os.path.join(temp_dir, created_filename)
-                            os.rename(created_filepath, output_path)
-                            logger.info(f"Successfully downloaded via temporary directory fallback")
-                        else:
-                            raise FileNotFoundError(f"HQPorner/Eporner/YouPorn fallback download created no new files in {temp_dir}")
-                    finally:
-                        # Clean up temporary directory if it exists
-                        try:
-                            if os.path.exists(temp_dir):
-                                for file in os.listdir(temp_dir):
-                                    os.remove(os.path.join(temp_dir, file))
-                                os.rmdir(temp_dir)
-                        except OSError:
-                            pass
+                    # Find the largest file in the new files, assuming it's the video
+                    largest_file = max(new_files, key=lambda f: os.path.getsize(os.path.join(temp_dir, f)))
+                    created_filepath = os.path.join(temp_dir, largest_file)
+                    os.rename(created_filepath, output_path)
+                    logger.info(f"Successfully downloaded via temporary directory fallback")
 
-            elif isinstance(video, shared_functions.ph_Video):
-                try:
-                    self.active_downloads[download_id]['unit'] = 'bytes'
-                    self._custom_pornhub_downloader(video, output_path, final_quality, progress_callback)
-                except Exception as e:
-                    logger.warning(f"Custom PornHub downloader failed: {e}. Falling back to segment-based download.")
-                    self.active_downloads[download_id]['unit'] = 'segments'
+                finally:
+                    # Clean up temporary directory
                     try:
-                        video.download(path=output_path, quality=final_quality, downloader=self.threading_mode, display=progress_callback, remux=remux)
-                    except Exception as ph_e:
-                        logger.warning(f"PornHub download with quality '{final_quality}' failed: {ph_e}. Trying with 'best' quality.")
-                        try:
-                            video.download(path=output_path, quality='best', downloader=self.threading_mode, display=progress_callback, remux=remux)
-                        except Exception as ph_final_e:
-                            logger.error(f"All PornHub download methods failed: {ph_final_e}")
-                            raise ph_final_e
-
-            else:
-                # Generic fallback for other providers (MissAV, xHamster, SpankBang, etc.)
-                try:
-                    video.download(path=output_path, quality=final_quality, callback=progress_callback)
-                    # Verify the file was created successfully
-                    if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
-                        raise FileNotFoundError(f"Generic provider download failed to create file: {output_path}")
-                except Exception as e:
-                    logger.warning(f"Generic provider direct download failed: {e}")
-                    # Fallback: try downloading to a temporary directory similar to XNXX/XVIDEOS
-                    download_dir = os.path.dirname(output_path)
-                    temp_dir = os.path.join(download_dir, f"temp_{download_id}")
-                    
-                    try:
-                        os.makedirs(temp_dir, exist_ok=True)
-                        files_before = set(os.listdir(temp_dir))
-                        video.download(path=temp_dir, quality=final_quality, callback=progress_callback)
-                        files_after = set(os.listdir(temp_dir))
-                        new_files = files_after - files_before
-                        
-                        if new_files:
-                            # Find the video file if multiple files were created
-                            video_extensions = ['.mp4', '.avi', '.mov', '.mkv', '.webm', '.flv']
-                            video_file = None
-                            for file in new_files:
-                                if any(file.lower().endswith(ext) for ext in video_extensions):
-                                    video_file = file
-                                    break
-                            
-                            if video_file:
-                                created_filepath = os.path.join(temp_dir, video_file)
-                                os.rename(created_filepath, output_path)
-                                logger.info(f"Successfully downloaded via temporary directory fallback")
-                                # Clean up other files
-                                for file in new_files:
-                                    if file != video_file:
-                                        try:
-                                            os.remove(os.path.join(temp_dir, file))
-                                        except OSError:
-                                            pass
-                            else:
-                                # If no video file found, try to move the first file
-                                if len(new_files) == 1:
-                                    created_filename = list(new_files)[0]
-                                    created_filepath = os.path.join(temp_dir, created_filename)
-                                    os.rename(created_filepath, output_path)
-                                    logger.info(f"Successfully downloaded via temporary directory fallback")
-                                else:
-                                    raise FileNotFoundError(f"Generic provider fallback download created no recognizable video files in {temp_dir}")
-                        else:
-                            raise FileNotFoundError(f"Generic provider fallback download created no new files in {temp_dir}")
-                    finally:
-                        # Clean up temporary directory if it exists
-                        try:
-                            if os.path.exists(temp_dir):
-                                for file in os.listdir(temp_dir):
-                                    filepath = os.path.join(temp_dir, file)
-                                    if os.path.isfile(filepath):
-                                        os.remove(filepath)
-                                os.rmdir(temp_dir)
-                        except OSError:
-                            pass
+                        if os.path.exists(temp_dir):
+                            for file in os.listdir(temp_dir):
+                                os.remove(os.path.join(temp_dir, file))
+                            os.rmdir(temp_dir)
+                    except OSError:
+                        pass
 
             if download_id in self.active_downloads:
                 self.active_downloads[download_id]['status'] = 'COMPLETED'
