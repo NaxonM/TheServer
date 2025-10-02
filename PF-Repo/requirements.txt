@@ -12,3 +12,4 @@ Flask
 gunicorn
 requests
 python-slugify
+mutagen
