@@ -45,7 +45,8 @@ class HeadlessDownloader:
 
     def load_user_settings(self):
         # This function reads from the global 'conf' object
-        conf.read("config.ini")
+        config_path = os.path.join(os.path.dirname(__file__), 'config.ini')
+        conf.read(config_path)
         self.delay = int(conf.get("Video", "delay"))
         self.timeout = int(conf.get("Performance", "timeout"))
         self.retries = int(conf.get("Performance", "retries"))
