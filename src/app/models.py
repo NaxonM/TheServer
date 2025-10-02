@@ -44,6 +44,7 @@ class DownloadLog(db.Model):
     # New columns for source and thumbnail
     source_url = db.Column(db.String(2048), nullable=True) # URL of the source page (e.g., model, playlist)
     thumbnail = db.Column(db.String(2048), nullable=True) # URL of the video thumbnail
+    duration = db.Column(db.Integer, nullable=True) # Duration in seconds
 
     size_bytes = db.Column(db.Integer, nullable=False, default=0)
     progress_bytes = db.Column(db.Integer, nullable=False, default=0)
@@ -61,6 +62,7 @@ class DownloadLog(db.Model):
             "remote_url": self.remote_url,
             "source_url": self.source_url,
             "thumbnail": self.thumbnail,
+            "duration": self.duration,
             "size_bytes": self.size_bytes,
             "progress_bytes": self.progress_bytes,
             "speed_bps": self.speed_bps,

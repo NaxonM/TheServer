@@ -35,13 +35,13 @@ def create_app(config_class=Config):
     from .blueprints.auth import auth_bp
     from .blueprints.api import api_bp
     from .blueprints.admin import admin_bp
-    from .blueprints.porn_fetch import porn_fetch_bp
+    from .blueprints.pandora_box import pandora_box_bp
 
     app.register_blueprint(main_bp)
     app.register_blueprint(auth_bp)
     app.register_blueprint(api_bp, url_prefix='/api')
     app.register_blueprint(admin_bp, url_prefix='/admin')
-    app.register_blueprint(porn_fetch_bp)
+    app.register_blueprint(pandora_box_bp)
 
     # Configure logging
     log_dir = app.config['LOG_DIR']

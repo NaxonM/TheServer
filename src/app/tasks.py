@@ -14,8 +14,10 @@ def setup_database(app):
     with app.app_context():
         try:
             with open(lock_file, 'w') as f:
-                # Get an exclusive, non-blocking lock
-                fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                # Get an exclusive, blocking lock. This ensures other workers wait for the
+                # first one to complete setup, preventing a race condition where background
+                # threads start before the database tables are created.
+                fcntl.flock(f.fileno(), fcntl.LOCK_EX)
 
                 db.create_all()
 

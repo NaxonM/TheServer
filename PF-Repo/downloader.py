@@ -37,6 +37,7 @@ class HeadlessDownloader:
         self.retries = None
         self.timeout = None
         self.delay = None
+        self.ignore_errors = True
         self.main_api_url = "http://proxy_app:8000/api/internal/register-download"
 
         shared_functions.refresh_clients()
@@ -55,6 +56,7 @@ class HeadlessDownloader:
         self.skip_existing_files = True if conf.get("Video", "skip_existing_files") == "true" else False
         self.result_limit = int(conf.get("Video", "result_limit", fallback=50))
         self.threading_mode = conf.get("Performance", "threading_mode")
+        self.ignore_errors = conf.getboolean("Performance", "ignore_errors", fallback=True)
 
         # Apply settings to backend clients
         shared_functions.config.request_delay = self.delay
@@ -64,7 +66,7 @@ class HeadlessDownloader:
         shared_functions.refresh_clients()
         logger.info("Refreshed Clients with user settings being applied!")
 
-    def register_with_main_app(self, filename, remote_url, file_path, source_url=None, thumbnail=None):
+    def register_with_main_app(self, filename, remote_url, file_path, source_url=None, thumbnail=None, duration=None, author=None, tags=None, publish_date=None):
         """
         Notifies the main application of a new download.
         """
@@ -85,6 +87,10 @@ class HeadlessDownloader:
                 "size_bytes": size_bytes,
                 "source_url": source_url,
                 "thumbnail": thumbnail,
+                "duration": duration,
+                "author": author,
+                "tags": tags,
+                "publish_date": publish_date,
             }
             # Filter out None values so they are not sent in the payload
             payload = {k: v for k, v in payload.items() if v is not None}
@@ -112,6 +118,69 @@ class HeadlessDownloader:
         # If slugify results in an empty string (e.g., title was all special characters), fallback.
         return safe_title if safe_title else "video"
 
+    def _select_best_available_quality(self, requested_quality, available_qualities):
+        """
+        Selects the best possible quality from the available list based on the requested quality.
+        - 'best': Highest available quality.
+        - 'half': Middle available quality.
+        - 'worst': Lowest available quality.
+        - Specific (e.g., '720p'): The requested quality or the next best available.
+        """
+        if not available_qualities:
+            logger.warning("No available qualities found for this video.")
+            return None
+
+        def quality_sort_key(q):
+            s = str(q).lower()
+            if 'high' in s: return 10000
+            if 'low' in s: return 0
+            numeric_part = re.search(r'(\d+)', s)
+            if numeric_part:
+                return int(numeric_part.group(1))
+            return -1
+
+        # Sort the qualities from best to worst
+        sorted_qualities = sorted(list(set(available_qualities)), key=quality_sort_key, reverse=True)
+        logger.debug(f"Available qualities sorted: {sorted_qualities}")
+
+        # Handle abstract quality settings
+        if requested_quality == 'best':
+            return sorted_qualities[0]
+        if requested_quality == 'half':
+            middle_index = len(sorted_qualities) // 2
+            return sorted_qualities[middle_index]
+        if requested_quality == 'worst':
+            return sorted_qualities[-1]
+
+        # Handle specific quality requests (e.g., '1080p')
+        if requested_quality in sorted_qualities:
+            return requested_quality
+
+        # If the specific quality is not found, find the next best (lower) resolution.
+        try:
+            # Extract numeric part of the requested quality (e.g., 720 from '720p')
+            requested_res = int(re.sub(r'[^0-9]', '', requested_quality))
+
+            # Iterate through sorted qualities to find the first one that is <= requested
+            for q in sorted_qualities:
+                q_res_str = re.sub(r'[^0-9]', '', q)
+                if q_res_str:
+                    q_res = int(q_res_str)
+                    if q_res <= requested_res:
+                        logger.info(f"Quality '{requested_quality}' not available. Falling back to next best: '{q}'.")
+                        return q
+
+            # If requested quality is lower than all available options, return the lowest available.
+            lowest_quality = sorted_qualities[-1]
+            logger.warning(f"Requested quality '{requested_quality}' is lower than all available options. Falling back to lowest: '{lowest_quality}'.")
+            return lowest_quality
+
+        except (ValueError, TypeError):
+            # If resolution parsing fails (e.g., for non-numeric qualities), default to the best available.
+            best_quality = sorted_qualities[0]
+            logger.warning(f"Could not parse resolution from '{requested_quality}'. Defaulting to best available: '{best_quality}'.")
+            return best_quality
+
     def download_video_by_url(self, url, output_dir=None, quality='best', source_url=None, thumbnail=None):
         """
         Main entry point for downloading a single video.
@@ -123,20 +192,38 @@ class HeadlessDownloader:
                 raise ValueError(f"Could not find video for URL: {url}")
 
             # Determine if progress is measured in bytes or segments.
-            # This helps the frontend display progress more accurately.
             is_segment_download = isinstance(video, shared_functions.ph_Video) and not hasattr(video, '_custom_downloader')
             progress_unit = 'segments' if is_segment_download else 'bytes'
-
 
             attrs = shared_functions.load_video_attributes(video)
             unsafe_title = attrs.get('title', 'video')
             safe_title = self._sanitize_filename(unsafe_title)
 
-
             # Use the provided thumbnail or try to get it from the video attributes
             final_thumbnail = thumbnail or attrs.get('thumbnail')
+            # If no explicit source_url is given, use the video's own URL.
+            if not source_url:
+                source_url = url
 
             final_output_dir = output_dir or self.output_path or os.getcwd()
+
+            # Ensure the output directory exists and is writable
+            try:
+                os.makedirs(final_output_dir, exist_ok=True)
+                logging.info(f"Ensuring output directory exists: {final_output_dir}")
+                
+                # Test write permissions by creating a temporary test file
+                test_file = os.path.join(final_output_dir, '.test_write_permissions')
+                try:
+                    with open(test_file, 'w') as f:
+                        f.write('test')
+                    os.remove(test_file)
+                    logging.info(f"Write permissions verified for directory: {final_output_dir}")
+                except Exception as perm_e:
+                    logging.warning(f"Potential write permission issue in {final_output_dir}: {perm_e}")
+            except Exception as dir_e:
+                logging.error(f"Failed to create output directory {final_output_dir}: {dir_e}")
+                raise dir_e
 
             if self.directory_system:
                 author = attrs.get('author', 'unknown_author')
@@ -144,7 +231,6 @@ class HeadlessDownloader:
                 os.makedirs(author_dir, exist_ok=True)
                 out_file = os.path.join(author_dir, f"{safe_title}.mp4")
             else:
-                os.makedirs(final_output_dir, exist_ok=True)
                 out_file = os.path.join(final_output_dir, f"{safe_title}.mp4")
 
             if self.skip_existing_files and os.path.exists(out_file):
@@ -162,7 +248,16 @@ class HeadlessDownloader:
                 "last_update": time.time()
             }
 
-            self.perform_download(video, out_file, remote_url=url, quality=quality, download_id=download_id, source_url=source_url, thumbnail=final_thumbnail)
+            self.perform_download(
+                video=video,
+                output_path=out_file,
+                remote_url=url,
+                quality=quality,
+                download_id=download_id,
+                source_url=source_url,
+                thumbnail=final_thumbnail,
+                video_attrs=attrs
+            )
 
             return out_file, "Downloaded"
 
@@ -207,6 +302,9 @@ class HeadlessDownloader:
                 except requests.RequestException as e:
                     logger.warning(f"Could not get size for segment {ts_url}: {e}")
 
+            if total_size == 0:
+                raise Exception("Could not determine total download size from M3U8 segments.")
+
             downloaded_size = 0
             progress_callback(0, total_size) # Initial progress update
 
@@ -224,7 +322,7 @@ class HeadlessDownloader:
                         # Decide if you want to retry or fail the whole download
                         raise e # Re-raise to fail the download
 
-    def perform_download(self, video, output_path, remote_url, quality, download_id, source_url=None, thumbnail=None):
+    def perform_download(self, video, output_path, remote_url, quality, download_id, source_url=None, thumbnail=None, video_attrs=None):
         """
         The actual download logic, with progress callback.
         """
@@ -233,90 +331,240 @@ class HeadlessDownloader:
             if download_id in self.active_downloads:
                 last_update = self.active_downloads[download_id].get('last_update', current_time)
                 last_progress = self.active_downloads[download_id].get('progress', 0)
-
                 time_diff = current_time - last_update
                 progress_diff = pos - last_progress
-
                 speed_bps = 0
-                if self.active_downloads[download_id]['unit'] == 'bytes' and time_diff > 0.5: # Update speed every half second
+                if self.active_downloads[download_id]['unit'] == 'bytes' and time_diff > 0.5:
                     speed_bps = (progress_diff / time_diff) * 8
                 elif self.active_downloads[download_id].get('speed_bps'):
-                    speed_bps = self.active_downloads[download_id]['speed_bps'] # Keep last speed if interval too short
-
+                    speed_bps = self.active_downloads[download_id]['speed_bps']
                 self.active_downloads[download_id].update({
-                    "progress": pos,
-                    "total": total,
-                    "speed_bps": speed_bps,
-                    "last_update": current_time
+                    "progress": pos, "total": total, "speed_bps": speed_bps, "last_update": current_time
                 })
 
         try:
-            # --- Quality Check ---
-            # For libraries that support it, check if the quality exists.
-            available_qualities = []
-            if hasattr(video, 'qualities') and video.qualities:
-                available_qualities = list(video.qualities.keys())
-            elif hasattr(video, 'get_available_qualities'):
-                available_qualities = video.get_available_qualities()
+            # --- Resolve Quality ---
+            if not video_attrs: # Failsafe if attrs weren't passed
+                video_attrs = shared_functions.load_video_attributes(video)
 
-            if available_qualities and quality not in available_qualities:
-                logger.warning(f"Quality '{quality}' not found for {remote_url}. Available: {available_qualities}. Falling back to 'best'.")
-                quality = 'best'
+            available_qualities = video_attrs.get('qualities', [])
+            final_quality = self._select_best_available_quality(quality, available_qualities)
+
+            if final_quality is None:
+                logger.error(f"Could not determine a valid download quality for {remote_url} with requested quality '{quality}'. Available: {available_qualities}")
+                raise ValueError(f"No suitable download quality found for {remote_url}")
+            elif final_quality != quality:
+                logger.warning(f"Quality '{quality}' not found for {remote_url}. Available: {available_qualities}. Falling back to '{final_quality}'.")
 
             # --- Download Execution ---
-            if hasattr(video, '_custom_pornhub_downloader'): # Use our custom handler for PornHub
-                 self.active_downloads[download_id]['unit'] = 'bytes'
-                 self._custom_pornhub_downloader(video, output_path, quality, progress_callback)
-            elif isinstance(video, shared_functions.ph_Video):
-                # PornHub downloads are segment-based and use the 'display' parameter for progress.
-                # The library's download method for this class does not accept 'no_title'.
-                video.download(path=output_path, quality=quality, downloader=self.threading_mode, display=progress_callback, remux=remux)
-            elif isinstance(video, (shared_functions.hq_Video, shared_functions.ep_Video)):
-                # HQPorner and Eporner have a simpler download method signature for byte-based downloads.
-                video.download(path=output_path, quality=quality, callback=progress_callback, no_title=True)
-            elif isinstance(video, (shared_functions.xv_Video, shared_functions.xn_Video)):
-                # These libraries expect a directory path and create their own (unsanitized) filename.
-                # They also require the 'downloader' argument.
-                # We let them create the file, then we find and rename it to our sanitized name.
+            if isinstance(video, (shared_functions.xv_Video, shared_functions.xn_Video)):
                 download_dir = os.path.dirname(output_path)
                 os.makedirs(download_dir, exist_ok=True)
-
                 files_before = set(os.listdir(download_dir))
-                video.download(path=download_dir, quality=quality, callback=progress_callback, downloader=self.threading_mode)
-                files_after = set(os.listdir(download_dir))
-
-                new_files = files_after - files_before
-                if len(new_files) == 1:
-                    created_filename = new_files.pop()
-                    created_filepath = os.path.join(download_dir, created_filename)
-                    logger.info(f"Library created file '{created_filename}', renaming to '{os.path.basename(output_path)}'")
-                    os.rename(created_filepath, output_path)
-                elif len(new_files) == 0:
-                     logger.error(f"Download for {remote_url} seemed to succeed but no new file was created in {download_dir}.")
+                
+                try:
+                    video.download(path=download_dir, quality=final_quality, callback=progress_callback, downloader=self.threading_mode)
+                except Exception as e:
+                    logger.warning(f"Download to directory failed, trying direct download to file: {e}")
+                    # Fallback: try downloading directly to the target file
+                    try:
+                        video.download(path=output_path, quality=final_quality, callback=progress_callback, downloader=self.threading_mode)
+                        logger.info(f"Successfully downloaded directly to {output_path}")
+                    except Exception as fallback_e:
+                        logger.error(f"Both directory and direct download failed: {fallback_e}")
+                        raise fallback_e
                 else:
-                     logger.warning(f"Multiple files created for {remote_url} in {download_dir}. Cannot determine which one to rename.")
+                    # Check if any new files were created
+                    files_after = set(os.listdir(download_dir))
+                    new_files = files_after - files_before
+                    
+                    if len(new_files) == 1:
+                        created_filename = new_files.pop()
+                        created_filepath = os.path.join(download_dir, created_filename)
+                        logger.info(f"Library created file '{created_filename}', renaming to '{os.path.basename(output_path)}'")
+                        os.rename(created_filepath, output_path)
+                    elif len(new_files) == 0:
+                        # Try to check if the file was created with expected name
+                        expected_filename = os.path.basename(output_path)
+                        if os.path.exists(output_path):
+                            logger.info(f"Download file exists at expected location: {output_path}")
+                        else:
+                            # Look for any video files that might have been created
+                            video_extensions = ['.mp4', '.avi', '.mov', '.mkv', '.webm', '.flv']
+                            for file in os.listdir(download_dir):
+                                if any(file.lower().endswith(ext) for ext in video_extensions):
+                                    # Check file modification time to see if it's recent
+                                    file_path = os.path.join(download_dir, file)
+                                    if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+                                        logger.info(f"Found potential downloaded video file: {file}, moving to {os.path.basename(output_path)}")
+                                        os.rename(file_path, output_path)
+                                        break
+                            else:
+                                raise FileNotFoundError(f"Download for {remote_url} failed to create any new files in {download_dir}.")
+                    else:
+                        logger.warning(f"Multiple new files created ({len(new_files)}), attempting to locate video file")
+                        # Multiple files created, find the video file
+                        video_extensions = ['.mp4', '.avi', '.mov', '.mkv', '.webm', '.flv']
+                        video_file = None
+                        for file in new_files:
+                            if any(file.lower().endswith(ext) for ext in video_extensions):
+                                video_file = file
+                                break
+                        
+                        if video_file:
+                            created_filepath = os.path.join(download_dir, video_file)
+                            logger.info(f"Found multiple files, using video file '{video_file}', renaming to '{os.path.basename(output_path)}'")
+                            os.rename(created_filepath, output_path)
+                            # Clean up other files
+                            for file in new_files:
+                                if file != video_file:
+                                    other_file = os.path.join(download_dir, file)
+                                    try:
+                                        os.remove(other_file)
+                                        logger.info(f"Cleaned up extra file: {file}")
+                                    except OSError as cleanup_e:
+                                        logger.warning(f"Could not clean up extra file {file}: {cleanup_e}")
+                        else:
+                            raise FileNotFoundError(f"Download for {remote_url} created multiple files but no recognizable video file in {download_dir}.")
+
+            elif isinstance(video, (shared_functions.hq_Video, shared_functions.ep_Video)):
+                quality_key =final_quality
+                if hasattr(video, 'qualities') and isinstance(video.qualities, dict):
+                    # Find the key corresponding to the selected quality value (e.g., find '1080' from '1080p')
+                    for key, value in video.qualities.items():
+                        if str(value) == str(final_quality):
+                            quality_key = key
+                            break
+                
+                try:
+                    video.download(path=output_path, quality=quality_key, callback=progress_callback, no_title=True)
+                    # Verify the file was created successfully
+                    if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
+                        raise FileNotFoundError(f"HQPorner/Eporner download failed to create file: {output_path}")
+                except Exception as e:
+                    logger.warning(f"HQPorner/Eporner direct download failed: {e}")
+                    # Fallback: try downloading to a temporary directory similar to XNXX/XVIDEOS
+                    download_dir = os.path.dirname(output_path)
+                    temp_dir = os.path.join(download_dir, f"temp_{download_id}")
+                    
+                    try:
+                        os.makedirs(temp_dir, exist_ok=True)
+                        files_before = set(os.listdir(temp_dir))
+                        video.download(path=temp_dir, quality=quality_key, callback=progress_callback, no_title=True)
+                        files_after = set(os.listdir(temp_dir))
+                        new_files = files_after - files_before
+                        
+                        if new_files:
+                            # Move the created file to the final location
+                            created_filename = list(new_files)[0]
+                            created_filepath = os.path.join(temp_dir, created_filename)
+                            os.rename(created_filepath, output_path)
+                            logger.info(f"Successfully downloaded via temporary directory fallback")
+                        else:
+                            raise FileNotFoundError(f"HQPorner/Eporner fallback download created no new files in {temp_dir}")
+                    finally:
+                        # Clean up temporary directory if it exists
+                        try:
+                            if os.path.exists(temp_dir):
+                                for file in os.listdir(temp_dir):
+                                    os.remove(os.path.join(temp_dir, file))
+                                os.rmdir(temp_dir)
+                        except OSError:
+                            pass
+
+            elif isinstance(video, shared_functions.ph_Video):
+                try:
+                    self.active_downloads[download_id]['unit'] = 'bytes'
+                    self._custom_pornhub_downloader(video, output_path, final_quality, progress_callback)
+                except Exception as e:
+                    logger.warning(f"Custom PornHub downloader failed: {e}. Falling back to segment-based download.")
+                    self.active_downloads[download_id]['unit'] = 'segments'
+                    video.download(path=output_path, quality=final_quality, downloader=self.threading_mode, display=progress_callback, remux=remux)
+
             else:
-                # Fallback for any other libraries. Assume they take the full path and don't need the downloader arg.
-                video.download(path=output_path, quality=quality, callback=progress_callback)
+                # Generic fallback for other providers (MissAV, xHamster, SpankBang, etc.)
+                try:
+                    video.download(path=output_path, quality=final_quality, callback=progress_callback)
+                    # Verify the file was created successfully
+                    if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
+                        raise FileNotFoundError(f"Generic provider download failed to create file: {output_path}")
+                except Exception as e:
+                    logger.warning(f"Generic provider direct download failed: {e}")
+                    # Fallback: try downloading to a temporary directory similar to XNXX/XVIDEOS
+                    download_dir = os.path.dirname(output_path)
+                    temp_dir = os.path.join(download_dir, f"temp_{download_id}")
+                    
+                    try:
+                        os.makedirs(temp_dir, exist_ok=True)
+                        files_before = set(os.listdir(temp_dir))
+                        video.download(path=temp_dir, quality=final_quality, callback=progress_callback)
+                        files_after = set(os.listdir(temp_dir))
+                        new_files = files_after - files_before
+                        
+                        if new_files:
+                            # Find the video file if multiple files were created
+                            video_extensions = ['.mp4', '.avi', '.mov', '.mkv', '.webm', '.flv']
+                            video_file = None
+                            for file in new_files:
+                                if any(file.lower().endswith(ext) for ext in video_extensions):
+                                    video_file = file
+                                    break
+                            
+                            if video_file:
+                                created_filepath = os.path.join(temp_dir, video_file)
+                                os.rename(created_filepath, output_path)
+                                logger.info(f"Successfully downloaded via temporary directory fallback")
+                                # Clean up other files
+                                for file in new_files:
+                                    if file != video_file:
+                                        try:
+                                            os.remove(os.path.join(temp_dir, file))
+                                        except OSError:
+                                            pass
+                            else:
+                                # If no video file found, try to move the first file
+                                if len(new_files) == 1:
+                                    created_filename = list(new_files)[0]
+                                    created_filepath = os.path.join(temp_dir, created_filename)
+                                    os.rename(created_filepath, output_path)
+                                    logger.info(f"Successfully downloaded via temporary directory fallback")
+                                else:
+                                    raise FileNotFoundError(f"Generic provider fallback download created no recognizable video files in {temp_dir}")
+                        else:
+                            raise FileNotFoundError(f"Generic provider fallback download created no new files in {temp_dir}")
+                    finally:
+                        # Clean up temporary directory if it exists
+                        try:
+                            if os.path.exists(temp_dir):
+                                for file in os.listdir(temp_dir):
+                                    filepath = os.path.join(temp_dir, file)
+                                    if os.path.isfile(filepath):
+                                        os.remove(filepath)
+                                os.rmdir(temp_dir)
+                        except OSError:
+                            pass
 
             if download_id in self.active_downloads:
                 self.active_downloads[download_id]['status'] = 'COMPLETED'
 
         finally:
-            logger.info(f"Finished download: {video.title}")
-            if conf.get("Video", "write_metadata") == "true" and os.path.exists(output_path):
-                if remux:
-                    shared_functions.write_tags(
-                        path=output_path,
-                        data=shared_functions.load_video_attributes(video))
+            logger.info(f"Finished download: {getattr(video, 'title', 'N/A')}")
+            if os.path.exists(output_path):
+                if conf.get("Video", "write_metadata") == "true":
+                    if remux:
+                        shared_functions.write_tags(path=output_path, data=video_attrs)
 
-            self.register_with_main_app(
-                filename=os.path.basename(output_path),
-                remote_url=remote_url,
-                file_path=output_path,
-                source_url=source_url,
-                thumbnail=thumbnail
-            )
+                self.register_with_main_app(
+                    filename=os.path.basename(output_path),
+                    remote_url=remote_url,
+                    file_path=output_path,
+                    source_url=source_url,
+                    thumbnail=thumbnail,
+                    duration=video_attrs.get('length'),
+                    author=video_attrs.get('author'),
+                    tags=video_attrs.get('tags'),
+                    publish_date=video_attrs.get('publish_date')
+                )
 
     def _get_video_generator(self, source_type, query, providers=None):
         """
@@ -339,6 +587,12 @@ class HeadlessDownloader:
                     video_generator = shared_functions.xv_client.get_pornstar(query).videos
                 else:
                     video_generator = shared_functions.xv_client.get_channel(query).videos
+            elif shared_functions.missav_pattern.match(query):
+                video_generator = shared_functions.mv_client.get_actress(query)
+            elif shared_functions.xhamster_pattern.match(query):
+                video_generator = shared_functions.xh_client.get_actress(query)
+            elif shared_functions.spankbang_pattern.match(query):
+                video_generator = shared_functions.sp_client.get_performer(query)
             else:
                 raise ValueError(f"Unsupported model URL: {query}")
 
@@ -371,6 +625,14 @@ class HeadlessDownloader:
                     enable_html_scraping=True,
                     page=20
                 ))
+            if 'hqporner' in providers:
+                active_generators.append(shared_functions.hq_client.search_videos(query))
+            if 'missav' in providers:
+                active_generators.append(shared_functions.mv_client.search(query))
+            if 'xhamster' in providers:
+                active_generators.append(shared_functions.xh_client.search(query))
+            if 'spankbang' in providers:
+                active_generators.append(shared_functions.sp_client.search(query))
 
             if not active_generators:
                 logger.warning(f"No valid search providers selected for query: '{query}'")
@@ -401,6 +663,9 @@ class HeadlessDownloader:
                 )
             except Exception as e:
                 logger.error(f"Failed to download a video from model {model_url}. Video URL: {getattr(video, 'url', 'N/A')}. Error: {e}")
+                if not self.ignore_errors:
+                    logger.error("Halting model download because ignore_errors is set to False.")
+                    raise
                 continue
         logger.info(f"Finished processing model: {model_url}")
 
@@ -422,6 +687,9 @@ class HeadlessDownloader:
                 )
             except Exception as e:
                 logger.error(f"Failed to download a video from playlist {playlist_url}. Video URL: {getattr(video, 'url', 'N/A')}. Error: {e}")
+                if not self.ignore_errors:
+                    logger.error("Halting playlist download because ignore_errors is set to False.")
+                    raise
                 continue
         logger.info(f"Finished processing playlist: {playlist_url}")
 
@@ -449,13 +717,15 @@ class HeadlessDownloader:
                 video_count += 1
             except Exception as e:
                 logger.error(f"Failed to download a video from search query '{query}'. Video URL: {getattr(video, 'url', 'N/A')}. Error: {e}")
+                if not self.ignore_errors:
+                    logger.error("Halting search download because ignore_errors is set to False.")
+                    raise
                 continue
         logger.info(f"Finished processing search query: '{query}'")
 
     def fetch_videos_from_source(self, source_type, query, providers=None, limit=None, delay=None):
         """
         Fetches and yields video data from a model, playlist, or search, with optional rate limiting.
-        This version is enhanced to return more metadata for a richer UI experience.
         """
         original_delay = shared_functions.config.request_delay
         if delay is not None:
@@ -481,45 +751,15 @@ class HeadlessDownloader:
                     logger.info(f"Result limit of {effective_limit} reached. Stopping fetch.")
                     break
                 try:
-                    # To provide a richer UI, we now fetch all attributes.
-                    # This introduces a slight delay per video but is necessary for the feature.
                     attrs = shared_functions.load_video_attributes(video)
-
-                    # The URL might not be a direct attribute, so we ensure it's present.
                     url = getattr(video, 'url', None)
-                    if not url and 'url' in attrs:
-                        url = attrs['url']
                     if not url:
                          logger.warning(f"Could not determine URL for a video in the list for query: {query}. Skipping.")
                          continue
 
-                    # --- Quality Discovery ---
-                    qualities = []
-                    if hasattr(video, 'qualities') and video.qualities:
-                        qualities = list(video.qualities.keys())
-                    elif hasattr(video, 'get_available_qualities'):
-                        qualities = video.get_available_qualities()
-                    elif hasattr(video, 'files') and isinstance(video.files, dict):
-                        qualities = list(video.files.keys())
-
-                    if not qualities:
-                        qualities = ['best']
-                    if 'best' not in qualities:
-                        qualities.insert(0, 'best')
-
-                    # Sort qualities numerically (e.g., 1080p, 720p)
-                    sorted_qualities = sorted(list(set(qualities)), key=lambda x: int(re.sub(r'[^0-9]', '', x)) if re.sub(r'[^0-9]', '', x) else 0, reverse=True)
-
-                    yield {
-                        "title": attrs.get('title', 'Untitled Video'),
-                        "url": url,
-                        "thumbnail": attrs.get('thumbnail'),
-                        "author": attrs.get('author'),
-                        "tags": attrs.get('tags', []),
-                        "length": attrs.get('length'),
-                        "publish_date": attrs.get('publish_date'),
-                        "qualities": sorted_qualities
-                    }
+                    # Add the URL to the attributes dict to ensure it's always available
+                    attrs['url'] = url
+                    yield attrs
                     video_count += 1
                 except Exception as e:
                     logger.error(f"Could not process a video from {query}. Error: {e}\n{traceback.format_exc()}")
@@ -540,40 +780,16 @@ class HeadlessDownloader:
                 return {"error": "Video not found or unsupported URL."}
 
             attrs = shared_functions.load_video_attributes(video)
-
-            qualities = []
-            # Attempt to get qualities from multiple possible attributes.
-            if hasattr(video, 'qualities') and video.qualities:
-                qualities = list(video.qualities.keys())
-            elif hasattr(video, 'get_available_qualities'):
-                qualities = video.get_available_qualities()
-            elif hasattr(video, 'files') and isinstance(video.files, dict):
-                qualities = list(video.files.keys())
-            elif 'qualities' in attrs and attrs['qualities']:
-                qualities = attrs['qualities']
-            # Add a fallback for xnxx/xvideos which do not have discoverable qualities.
-            if not qualities and ('xnxx.com' in url or 'xvideos.com' in url):
-                qualities = ['high', 'low']
-
-            # If no specific qualities are found, default to a sensible list.
-            if not qualities:
-                qualities = ['best']
-
-            # Ensure 'best' is always an option
-            if 'best' not in qualities:
-                qualities.insert(0, 'best')
-
-            info = {
-                "title": attrs.get('title', 'Untitled Video'),
-                "thumbnail": attrs.get('thumbnail'),
-                "author": attrs.get('author'),
-                "tags": attrs.get('tags', []),
-                "length": attrs.get('length'),
-                "publish_date": attrs.get('publish_date'),
-                "qualities": sorted(list(set(qualities)), key=lambda x: int(re.sub(r'[^0-9]', '', x)) if re.sub(r'[^0-9]', '', x) else 0, reverse=True)
-            }
-            logger.info(f"Successfully fetched video info for {url}: {info['title']}")
-            return info
+            logger.info(f"Successfully fetched video info for {url}: {attrs.get('title')}")
+            logger.info(f"Available qualities for '{attrs.get('title')}': {attrs.get('qualities', [])}")
+            
+            # Additional debugging for quality issues
+            if not attrs.get('qualities'):
+                logger.warning(f"No qualities found for video '{attrs.get('title')}' at URL: {url}")
+            else:
+                logger.info(f"Fetched {len(attrs.get('qualities', []))} quality options for '{attrs.get('title')}'")
+                
+            return attrs
 
         except Exception as e:
             logger.error(f"Failed to get video info for {url}: {e}", exc_info=True)

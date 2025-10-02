@@ -338,9 +338,9 @@ def manage_log_settings():
     setting = Setting.query.filter_by(key=log_setting_key).first()
     return jsonify({"show_logs": setting.value if setting else 'false'})
 
-@api_bp.route('/porn-fetch/status', methods=['GET'])
+@api_bp.route('/pandora-box/status', methods=['GET'])
 @login_required
-def get_porn_fetch_status():
+def get_pandora_box_status():
     """
     Acts as a secure proxy to fetch the status of active downloads from the porn-fetch service.
     """
@@ -352,9 +352,9 @@ def get_porn_fetch_status():
         current_app.logger.error(f"Could not connect to porn-fetch status endpoint: {e}")
         return jsonify([]), 503 # Return an empty list and a Service Unavailable status
 
-@api_bp.route('/porn-fetch/settings', methods=['GET', 'POST'])
+@api_bp.route('/pandora-box/settings', methods=['GET', 'POST'])
 @login_required
-def get_porn_fetch_settings():
+def get_pandora_box_settings():
     """
     Acts as a secure proxy to get or update settings for the porn-fetch service.
     """
@@ -416,9 +416,9 @@ def fetch_videos():
                  return jsonify({"error": "An unknown error occurred in the porn-fetch service."}), e.response.status_code
         return jsonify({"error": "An error occurred while communicating with the porn-fetch service."}), 503
 
-@api_bp.route('/porn-fetch/batch-download', methods=['POST'])
+@api_bp.route('/pandora-box/batch-download', methods=['POST'])
 @login_required
-def porn_fetch_batch_download():
+def pandora_box_batch_download():
     """
     Acts as a secure proxy to send a batch download request to the porn-fetch service.
     """
@@ -440,9 +440,9 @@ def porn_fetch_batch_download():
                 return jsonify({"error": "An unknown error occurred in the porn-fetch service."}), e.response.status_code
         return jsonify({"error": "An error occurred while communicating with the porn-fetch service."}), 503
 
-@api_bp.route('/porn-fetch/video-info', methods=['POST'])
+@api_bp.route('/pandora-box/video-info', methods=['POST'])
 @login_required
-def porn_fetch_video_info():
+def pandora_box_video_info():
     """
     Acts as a secure proxy to fetch video metadata from the porn-fetch service.
     """
@@ -464,6 +464,91 @@ def porn_fetch_video_info():
         return jsonify({"error": "An error occurred while communicating with the porn-fetch service."}), 503
 
 
+@api_bp.route('/pandora-box/history', methods=['GET'])
+@login_required
+def get_pandora_box_history():
+    """
+    Fetches the download history specifically for the porn-fetch service.
+    """
+    try:
+        history = DownloadLog.query.filter_by(source=DownloadSource.PORN_FETCH).order_by(DownloadLog.created_at.desc()).all()
+        return jsonify([d.to_dict() for d in history])
+    except Exception as e:
+        current_app.logger.error(f"Could not fetch porn-fetch history: {e}", exc_info=True)
+        return jsonify({"error": "Failed to fetch download history."}), 500
+
+
+@api_bp.route('/pandora-box/check-model-updates', methods=['POST'])
+@login_required
+def check_model_updates():
+    """
+    Checks for new, undownloaded videos for a given model by passing already
+    downloaded URLs to the porn-fetch service for filtering.
+    """
+    data = request.get_json()
+    model_url = data.get('url')
+    if not model_url:
+        return jsonify({"error": "Missing model 'url' in request body"}), 400
+
+    try:
+        # 1. Get all video URLs already downloaded or queued from this source.
+        downloaded_urls = [
+            log.remote_url for log in DownloadLog.query
+            .filter(DownloadLog.source == DownloadSource.PORN_FETCH)
+            .with_entities(DownloadLog.remote_url)
+            .all()
+        ]
+
+        # 2. Call the dedicated endpoint on the porn-fetch service, passing the list of downloaded URLs.
+        payload = {
+            'model_url': model_url,
+            'downloaded_urls': downloaded_urls
+        }
+        response = requests.post(
+            "http://porn-fetch:5000/api/check-model-updates",
+            json=payload,
+            timeout=45
+        )
+        response.raise_for_status()
+
+        # The service now returns only the new videos, so we can pass the response directly.
+        return jsonify(response.json()), response.status_code
+
+    except requests.exceptions.RequestException as e:
+        current_app.logger.error(f"Could not connect to porn-fetch service to check model updates for {model_url}: {e}")
+        return jsonify({"error": "An error occurred while communicating with the porn-fetch service."}), 503
+    except Exception as e:
+        current_app.logger.error(f"An unexpected error occurred while checking for model updates for {model_url}: {e}", exc_info=True)
+        return jsonify({"error": "An internal server error occurred."}), 500
+
+@api_bp.route('/pandora-box/models', methods=['GET', 'POST', 'DELETE'])
+@login_required
+def manage_pandora_box_models():
+    """
+    Acts as a secure proxy to manage the list of tracked models in the porn-fetch service.
+    """
+    try:
+        if request.method == 'GET':
+            response = requests.get("http://porn-fetch:5000/api/models", timeout=10)
+        elif request.method == 'POST':
+            data = request.get_json()
+            response = requests.post("http://porn-fetch:5000/api/models", json=data, timeout=10)
+        elif request.method == 'DELETE':
+            data = request.get_json()
+            response = requests.delete("http://porn-fetch:5000/api/models", json=data, timeout=10)
+
+        response.raise_for_status()
+        return jsonify(response.json()), response.status_code
+
+    except requests.exceptions.RequestException as e:
+        current_app.logger.error(f"Could not connect to porn-fetch models endpoint: {e}")
+        if e.response:
+            try:
+                return jsonify(e.response.json()), e.response.status_code
+            except json.JSONDecodeError:
+                return jsonify({"error": "An unknown error occurred in the porn-fetch service."}), e.response.status_code
+        return jsonify({"error": "An error occurred while communicating with the porn-fetch service."}), 503
+
 @api_bp.route('/internal/register-download', methods=['POST'])
 @csrf.exempt
 def register_external_download():
@@ -477,6 +562,7 @@ def register_external_download():
     size_bytes = data.get('size_bytes')
     source_url = data.get('source_url')
     thumbnail = data.get('thumbnail')
+    duration = data.get('duration')
 
     if filename is None or remote_url is None or size_bytes is None:
         return jsonify({"error": "Missing required data: filename, remote_url, and size_bytes are required."}), 400
@@ -499,7 +585,8 @@ def register_external_download():
             status=DownloadStatus.COMPLETED,
             source=DownloadSource.PORN_FETCH,
             source_url=source_url,
-            thumbnail=thumbnail
+            thumbnail=thumbnail,
+            duration=int(duration) if duration is not None else None
         )
         db.session.add(log_entry)
         db.session.commit()

@@ -278,93 +278,242 @@ def setup_config_file(force=False):
 
 
 def load_video_attributes(video):
-    title = video.title
+    """
+    Loads all relevant video attributes, including qualities, after ensuring
+    the video object's data has been fetched from the provider.
+    This function is designed to be the single source of truth for video metadata.
+    """
+    title = "N/A"
+    author = "N/A"
+    length = 0
+    tags = []
+    publish_date = "N/A"
+    thumbnail = None
+    qualities = []
 
-    if isinstance(video, ph_Video):
-        try:
-            author = video.author.name
+    try:
+        if isinstance(video, ph_Video):
+            video.refresh()
+            title = video.title
+            author = video.author.name if hasattr(video.author, 'name') else video.pornstars[0]
+            length = video.duration.seconds
+            tags = [tag.name for tag in video.tags]
+            publish_date = video.date
+            thumbnail = video.image.url
+            
+            # Enhanced quality fetching for PornHub
+            qualities = []
+            if hasattr(video, 'qualities') and isinstance(video.qualities, tuple):
+                qualities = [q.quality for q in video.qualities if hasattr(q, 'quality')]
+            elif hasattr(video, 'qualities'):
+                # Handle other formats of qualities attribute
+                if isinstance(video.qualities, dict):
+                    qualities = list(video.qualities.keys())
+                elif isinstance(video.qualities, (list, tuple)):
+                    qualities = [str(q) for q in video.qualities]
+                    
+            # Try to refresh qualities if not found
+            if not qualities and hasattr(video, 'fetch_qualities'):
+                try:
+                    video.fetch_qualities()
+                    if hasattr(video, 'qualities') and isinstance(video.qualities, tuple):
+                        qualities = [q.quality for q in video.qualities if hasattr(q, 'quality')]
+                except Exception as e:
+                    logger.warning(f"fetch_qualities failed for PornHub: {e}")
 
-        except Exception:
-            author = video.pornstars[0]
+        elif isinstance(video, (xv_Video, xn_Video)):
+            if hasattr(video, 'fetch'): video.fetch()
+            title = video.title
+            author = video.author.name if hasattr(video.author, 'name') else video.author
+            length = video.length
+            tags = video.tags
+            publish_date = video.publish_date
+            thumbnail = video.thumbnail_url[0] if isinstance(video.thumbnail_url, list) else video.thumbnail_url
+            
+            # Enhanced quality fetching for XVideos/XNXX
+            qualities = []
+            if hasattr(video, 'get_available_qualities'):
+                try:
+                    video.get_available_qualities()
+                    qualities = video.get_available_qualities()
+                except Exception as e:
+                    logger.warning(f"get_available_qualities failed for {video.__class__.__name__}: {e}")
+                    
+            if not qualities and hasattr(video, 'qualities'):
+                if isinstance(video.qualities, dict):
+                    qualities = list(video.qualities.keys())
+                elif isinstance(video.qualities, (list, tuple)):
+                    qualities = [str(q) for q in video.qualities]
+                    
+            # Try alternative method: fetch formats directly
+            if not qualities and hasattr(video, 'formats'):
+                formats = video.formats
+                if isinstance(formats, dict):
+                    qualities = [str(q) for q in formats.keys()]
+                elif isinstance(formats, (list, tuple)):
+                    qualities = [str(f.get('quality', f.get('format', f))) for f in formats if isinstance(f, dict)]
 
-        length = video.duration.seconds / 60
-        tags = ",".join([tag.name for tag in video.tags])
-        publish_date = video.date
-        video.refresh()  # Throws an error otherwise. I have no idea why.
-        thumbnail = video.image.url
+        elif isinstance(video, ep_Video):
+            if hasattr(video, 'fetch'): video.fetch()
+            title = video.title
+            author = video.author
+            length = video.length_minutes * 60 if video.length_minutes else 0
+            tags = video.tags
+            publish_date = video.publish_date
+            thumbnail = video.thumbnail
+            
+            # Enhanced quality fetching for Eporner
+            qualities = []
+            if hasattr(video, 'qualities'):
+                if isinstance(video.qualities, dict):
+                    qualities = list(video.qualities.keys())
+                elif isinstance(video.qualities, (list, tuple)):
+                    qualities = [str(q) for q in video.qualities]
+                    
+            # Try alternative method: check for quality list
+            if not qualities and hasattr(video, 'available_qualities'):
+                qualities = list(video.available_qualities) if isinstance(video.available_qualities, (list, tuple)) else []
+                
+            # Fallback: try to extract from formats
+            if not qualities and hasattr(video, 'formats'):
+                formats = video.formats
+                if isinstance(formats, dict):
+                    qualities = [str(q) for q in formats.keys()]
+                elif isinstance(formats, (list, tuple)):
+                    qualities = [str(f.get('quality', f.get('format', f))) for f in formats if isinstance(f, dict)]
 
-    elif isinstance(video, xn_Video):
-        author = video.author
-        length = video.length
-        tags = video.tags
-        publish_date = video.publish_date
-        thumbnail = video.thumbnail_url[0]
+        elif isinstance(video, hq_Video):
+            if hasattr(video, 'fetch'): video.fetch()
+            title = video.title
+            author = video.pornstars[0] if video.pornstars else "N/A"
+            length = video.length
+            tags = video.tags
+            publish_date = video.publish_date
+            thumbnail = video.get_thumbnails()[0] if video.get_thumbnails() else None
+            
+            # Enhanced quality fetching for HQPorner
+            qualities = []
+            if hasattr(video, 'qualities') and isinstance(video.qualities, dict):
+                # HQPorner qualities dict format: {'quality_name': download_url}
+                qualities = list(video.qualities.keys())
+                
+            # Try alternative method: check for quality list
+            if not qualities and hasattr(video, 'available_qualities'):
+                qualities = list(video.available_qualities) if isinstance(video.available_qualities, (list, tuple)) else []
+                
+            # Try another approach: look for formats/streams
+            if not qualities and hasattr(video, 'streams'):
+                streams = video.streams
+                if isinstance(streams, dict):
+                    qualities = [str(q) for q in streams.keys()]
+                elif isinstance(streams, (list, tuple)):
+                    qualities = [str(s.get('quality', s.get('format', s))) for s in streams if isinstance(s, dict)]
 
-    elif isinstance(video, xv_Video):
-        author = video.author.name
-        length = video.length
-        tags = video.tags
-        publish_date = video.publish_date
-        thumbnail = video.thumbnail_url
+        elif isinstance(video, (mv_Video, xh_Video, sp_Video)):
+            # Generic handling for providers with similar structures
+            if hasattr(video, 'fetch'): video.fetch()
+            title = video.title
+            author = video.author if hasattr(video, 'author') else "N/A"
+            length = video.length if hasattr(video, 'length') else 0
+            tags = video.tags if hasattr(video, 'tags') else []
+            publish_date = video.publish_date if hasattr(video, 'publish_date') else "N/A"
+            thumbnail = video.thumbnail
+            
+            # Enhanced quality fetching for MissAV/XHamster/SpankBang
+            qualities = []
+            if hasattr(video, 'qualities'):
+                if isinstance(video.qualities, dict):
+                    qualities = list(video.qualities.keys())
+                elif isinstance(video.qualities, (list, tuple)):
+                    qualities = [str(q) for q in video.qualities]
+                    
+            # Try alternative methods
+            if not qualities:
+                # Check for get_available_qualities method
+                if hasattr(video, 'get_available_qualities'):
+                    try:
+                        qualities = video.get_available_qualities()
+                        if isinstance(qualities, dict):
+                            qualities = list(qualities.keys())
+                    except Exception as e:
+                        logger.warning(f"get_available_qualities failed for {video.__class__.__name__}: {e}")
+                        
+                # Check for formats
+                elif hasattr(video, 'formats'):
+                    formats = video.formats
+                    if isinstance(formats, dict):
+                        qualities = [str(q) for q in formats.keys()]
+                    elif isinstance(formats, (list, tuple)):
+                        qualities = [str(f.get('quality', f.get('format', f))) for f in formats if isinstance(f, dict)]
 
-    elif isinstance(video, ep_Video):
-        author = video.author
-        length = video.length_minutes
-        tags = ",".join([tag for tag in video.tags])
-        publish_date = video.publish_date
-        thumbnail = video.thumbnail
+        else:
+            logger.error(f"Unsupported video object type: {type(video).__name__}")
+            raise TypeError(f"Unsupported video object type: {type(video).__name__}")
 
-    elif isinstance(video, hq_Video):
-        print("In loading stuff")
-        try:
-            author = video.pornstars[0]
-        except Exception:
-            author = "No pornstars / author"  # This can sometimes happen. Very rarely, but can happen...
+        # Ensure tags are a list of strings
+        if isinstance(tags, str):
+            tags = [tag.strip() for tag in tags.split(',')]
 
-        length = video.length
-        tags = ",".join([category for category in video.tags])
-        publish_date = video.publish_date
-        try:
-            thumbnail = video.get_thumbnails()[0]
+        # Fallback quality options if none were found
+        if not qualities:
+            logger.warning(f"No qualities found for video '{title}', providing default options")
+            qualities = ['720p', '480p', '360p']  # Default quality options
+            
+        data = {
+            "title": title,
+            "author": author,
+            "length": _parse_duration_to_seconds(length),
+            "tags": tags,
+            "publish_date": str(publish_date) if publish_date else "N/A",
+            "thumbnail": thumbnail,
+            "qualities": qualities
+        }
+        logger.debug(f"Loaded video data for '{title}': {data}")
+        return data
 
-        except (TypeError, WeirdError):
-            thumbnail = "Not available" # Expected, it's an error on HQPorners end.
+    except Exception as e:
+        logger.error(f"Failed to load attributes for video '{getattr(video, 'url', 'N/A')}'. Type: {type(video).__name__}. Error: {e}", exc_info=True)
+        # Return a default structure on error to prevent downstream crashes
+        return {
+            "title": "Error: Could not load data", "author": "N/A", "length": 0,
+            "tags": [], "publish_date": "N/A", "thumbnail": None, "qualities": ['720p', '480p', '360p']
+        }
 
-    elif isinstance(video, mv_Video):
-        author = "Not available"
-        length = "Not available"
-        tags = "Not available"
-        thumbnail = video.thumbnail
-        publish_date = video.publish_date
+def _parse_duration_to_seconds(duration):
+    """
+    Parses various duration formats (e.g., '17m 16s', '15 min', raw seconds)
+    into a total number of seconds.
+    """
+    if isinstance(duration, int):
+        return duration
+    if isinstance(duration, float):
+        return int(duration)
+    if isinstance(duration, str):
+        duration = duration.lower()
+        total_seconds = 0
+        if 'h' in duration:
+            match = re.search(r'(\d+)\s*h', duration)
+            if match: total_seconds += int(match.group(1)) * 3600
+        if 'm' in duration:
+            match = re.search(r'(\d+)\s*m', duration)
+            if match: total_seconds += int(match.group(1)) * 60
+        if 's' in duration:
+            match = re.search(r'(\d+)\s*s', duration)
+            if match: total_seconds += int(match.group(1))
 
-    elif isinstance(video, xh_Video):
-        author = ",".join(video.pornstars)
-        length = "Not available"
-        tags = "Not available"
-        thumbnail = video.thumbnail
-        publish_date = "Not available"
-
-    elif isinstance(video, sp_Video):
-        author = video.author
-        length = video.length
-        tags = ",".join(video.tags)
-        thumbnail = video.thumbnail
-        publish_date = video.publish_date
-
-    else:
-        raise "Instance Error! Please report this immediately on GitHub!"
-
-    data = {
-        "title": title,
-        "author": author,
-        "length": parse_length(length), # Make sure the video duration is not something like 6.7777777779
-        "tags": tags,
-        "publish_date": publish_date,
-        "thumbnail": thumbnail,
-    }
-    logger.debug(f"Loaded video data: {data}")
-
-    return data
+        # If no units found, assume it's just seconds or minutes:seconds
+        if total_seconds == 0:
+            if ':' in duration:
+                parts = duration.split(':')
+                if len(parts) == 2:
+                    return int(parts[0]) * 60 + int(parts[1])
+                elif len(parts) == 3:
+                    return int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+            elif duration.isdigit():
+                # Ambiguous case: could be minutes or seconds. Assume seconds.
+                return int(duration)
+        return total_seconds
+    return 0
 
 
 def write_tags(path, data: dict): # Using core from Porn Fetch to keep proxy support
@@ -399,143 +548,3 @@ def write_tags(path, data: dict): # Using core from Porn Fetch to keep proxy sup
     logging.debug("Tags: [3/3] ✔")
 
 
-def parse_length(length, video_source=None):
-    "Entirely written and copied from ChatGPT. My brain is not ready to fix that myself now, seriously..."
-    """
-    Parse a video length value and return its duration in minutes (rounded).
-
-    Notes:
-      - If length is already numeric (int/float), it is assumed to be in minutes.
-      - If length is a string:
-          * A string of the format "mm:ss" (e.g. "16:19") is parsed as minutes and seconds.
-          * A digits-only string is treated based on the source:
-              - If video_source contains "xnxx", then the value is already in minutes.
-              - If video_source contains "eporner" or "phub", then the value is in seconds.
-              - Otherwise, digits-only defaults to minutes.
-          * A string with a decimal point is assumed to be a minute value.
-          * If the string contains "min" (case-insensitive), the numeric part is extracted and used as minutes.
-          * Otherwise, we try to extract components from mixed formats such as "59m 40s" or "24 seconds".
-      - If no valid duration is found (or if the video source provides no length information),
-        returns "Not available".
-
-    In all conversions, if the computed minute value is > 0 but rounds to 0, returns 1 instead.
-    """
-    if length in (None, "", "Not available"):
-        return "Not available"
-
-    try:
-        # If already numeric (non-string) assume minutes.
-        if isinstance(length, (int, float)):
-            # Ensure that a small positive value returns at least 1 minute.
-            result = round(length)
-            return result if result > 0 else (1 if length > 0 else 0)
-
-        # Work with a stripped string.
-        s = str(length).strip()
-
-        # -------------------------------
-        # Case 1: "mm:ss" format (e.g. "16:19")
-        if ":" in s:
-            parts = s.split(":")
-            if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
-                minutes = int(parts[0])
-                seconds = int(parts[1])
-                total = minutes + seconds / 60.0
-                result = round(total)
-                if result == 0 and total > 0:
-                    result = 1
-                return result
-
-        # -------------------------------
-        # Case 2: Digits-only string.
-        if s.isdigit():
-            num = int(s)
-            if video_source:
-                src = str(video_source).lower()
-                if "xnxx" in src:
-                    # xnxx provides minutes directly.
-                    return num
-                elif "eporner" in src or "phub" in src:
-                    # These sites give seconds; convert to minutes.
-                    result = round(num / 60)
-                    if result == 0 and num > 0:
-                        result = 1
-                    return result
-                else:
-                    # Default: assume minutes.
-                    return num
-            else:
-                # Without a source hint, default to minutes.
-                return num
-
-        # -------------------------------
-        # Case 3: Value with a decimal point (assumed to be minutes).
-        if '.' in s:
-            try:
-                val = float(s)
-                result = round(val)
-                if result == 0 and val > 0:
-                    result = 1
-                return result
-            except ValueError:
-                pass
-
-        # -------------------------------
-        # Case 4: Contains "min" (e.g. "9 Min").
-        if "min" in s.lower():
-            num_str = ''.join(ch for ch in s if ch.isdigit() or ch == '.')
-            if num_str:
-                try:
-                    val = float(num_str)
-                    result = round(val)
-                    if result == 0 and val > 0:
-                        result = 1
-                    return result
-                except ValueError:
-                    pass
-
-        # -------------------------------
-        # Case 5: Mixed time units such as "59m 40s" or "1h 2m 3s"
-        time_units = {'s': 1 / 60, 'm': 1, 'h': 60}
-        total_minutes = 0.0
-        for part in s.split():
-            # Extract numeric (or decimal) part and letter part.
-            value_str = ''.join(ch for ch in part if ch.isdigit() or ch == '.')
-            unit_str = ''.join(ch for ch in part if ch.isalpha()).lower()
-            if value_str and unit_str in time_units:
-                try:
-                    total_minutes += float(value_str) * time_units[unit_str]
-                except ValueError:
-                    continue
-        if total_minutes > 0:
-            result = round(total_minutes)
-            if result == 0 and total_minutes > 0:
-                result = 1
-            return result
-
-        # -------------------------------
-        # Case 6: Formats like "24 seconds"
-        if s.endswith("seconds"):
-            num_str = ''.join(ch for ch in s if ch.isdigit() or ch == '.')
-            if num_str:
-                try:
-                    sec = float(num_str)
-                    result = round(sec / 60)
-                    if result == 0 and sec > 0:
-                        result = 1
-                    return result
-                except ValueError:
-                    pass
-
-        # -------------------------------
-        # Case 7: Formats ending with "min" (e.g. "17 min")
-        if s.endswith("min"):
-            num_part = s[:-3].strip()
-            if num_part.isdigit():
-                return int(num_part)
-
-        # If nothing matches, return None.
-        return None
-
-    except Exception:
-        return 0

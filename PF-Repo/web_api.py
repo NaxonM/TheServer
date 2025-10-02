@@ -12,6 +12,13 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 # Import the new headless downloader
 from downloader import HeadlessDownloader
 import src.backend.shared_functions as shared_functions
+from src.backend.CLI_model_feature_addon import (
+    load_state,
+    save_state,
+    get_all_saved_models,
+    add_model_url,
+    remove_model_url
+)
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -24,8 +31,9 @@ if not os.path.exists("config.ini"):
 # Instantiate the headless downloader. It will load settings from config.ini.
 downloader = HeadlessDownloader()
 
-# The download path is the root of the mounted volume in the container.
+# Define paths for data files
 DOWNLOAD_PATH = "/downloads"
+MODEL_DB_PATH = os.path.join(os.path.dirname(__file__), "model_database.json")
 
 @app.route('/api/download', methods=['POST'])
 def download_video():
@@ -72,6 +80,9 @@ def download_video():
                         downloader.download_video_by_url(url=url, output_dir=DOWNLOAD_PATH, quality=quality)
                     except Exception as e:
                         app.logger.error(f"Error downloading URL {url} in batch: {e}", exc_info=True)
+                        if not downloader.ignore_errors:
+                            app.logger.error("Halting batch download because ignore_errors is set to False.")
+                            raise # Re-raise the exception to stop the background thread.
             download_task = batch_download_task
 
         else:
@@ -184,6 +195,7 @@ def manage_settings():
             shared_functions.shared_config.set("Performance", "retries", str(new_settings.get('retries', 3)))
             shared_functions.shared_config.set("Performance", "timeout", str(new_settings.get('timeout', 60)))
             shared_functions.shared_config.set("Performance", "threading_mode", new_settings.get('threading_mode', 'threaded'))
+            shared_functions.shared_config.set("Performance", "ignore_errors", "true" if new_settings.get('ignore_errors') else "false")
 
             # Update video settings
             shared_functions.shared_config.set("Video", "directory_system", "1" if new_settings.get('directory_system') else "0")
@@ -213,6 +225,7 @@ def manage_settings():
                 "retries": shared_functions.shared_config.getint("Performance", "retries", fallback=3),
                 "timeout": shared_functions.shared_config.getint("Performance", "timeout", fallback=60),
                 "threading_mode": shared_functions.shared_config.get("Performance", "threading_mode", fallback='threaded'),
+                "ignore_errors": shared_functions.shared_config.getboolean("Performance", "ignore_errors", fallback=True),
                 "directory_system": shared_functions.shared_config.getboolean("Video", "directory_system", fallback=False),
                 "proxy": shared_functions.shared_config.get("Network", "proxy", fallback='')
             }
@@ -220,6 +233,94 @@ def manage_settings():
         except Exception as e:
             app.logger.error(f"Failed to load settings: {e}", exc_info=True)
             return jsonify({"error": "An internal error occurred while loading settings."}), 500
+
+# --- Model Management API ---
+
+@app.route('/api/models', methods=['GET'])
+def get_models():
+    """
+    Retrieves the list of all tracked models.
+    """
+    try:
+        # get_all_saved_models returns a list of tuples (url, data)
+        models_with_data = get_all_saved_models(path=MODEL_DB_PATH)
+        # We only need to return the URLs to the frontend
+        model_urls = [model[0] for model in models_with_data]
+        return jsonify(model_urls)
+    except Exception as e:
+        app.logger.error(f"Failed to get models: {e}", exc_info=True)
+        return jsonify({"error": "An internal error occurred while fetching models."}), 500
+
+@app.route('/api/models', methods=['POST'])
+def add_model():
+    """
+    Adds a new model URL to be tracked.
+    """
+    data = request.get_json()
+    if not data or 'url' not in data:
+        return jsonify({"error": "Missing 'url' in request body"}), 400
+
+    url = data['url']
+    try:
+        success = add_model_url(model_url=url, path=MODEL_DB_PATH)
+        if success:
+            return jsonify({"message": f"Model '{url}' added successfully."}), 201
+        else:
+            return jsonify({"error": f"Model '{url}' is already tracked."}), 409
+    except Exception as e:
+        app.logger.error(f"Failed to add model {url}: {e}", exc_info=True)
+        return jsonify({"error": "An internal error occurred while adding the model."}), 500
+
+@app.route('/api/check-model-updates', methods=['POST'])
+def check_model_updates_service():
+    """
+    Checks for new videos for a model, excluding URLs provided in the payload.
+    """
+    data = request.get_json()
+    if not data or 'model_url' not in data:
+        return jsonify({"error": "Missing 'model_url' in request body"}), 400
+
+    model_url = data['model_url']
+    downloaded_urls = set(data.get('downloaded_urls', []))
+
+    try:
+        # Using the existing fetch_videos_from_source generator
+        video_generator = downloader.fetch_videos_from_source(
+            source_type='model',
+            query=model_url,
+            limit=1000  # Use a high limit to get all videos
+        )
+
+        new_videos = [
+            video for video in video_generator
+            if video.get('url') not in downloaded_urls
+        ]
+        return jsonify(new_videos)
+
+    except Exception as e:
+        app.logger.error(f"Failed to check updates for model {model_url}: {e}", exc_info=True)
+        return jsonify({"error": "An internal error occurred while checking for updates."}), 500
+
+@app.route('/api/models', methods=['DELETE'])
+def remove_model():
+    """
+    Removes a model URL from the tracking list.
+    """
+    data = request.get_json()
+    if not data or 'url' not in data:
+        return jsonify({"error": "Missing 'url' in request body"}), 400
+
+    url = data['url']
+    try:
+        success = remove_model_url(model_url=url, path=MODEL_DB_PATH)
+        if success:
+            return jsonify({"message": f"Model '{url}' removed successfully."}), 200
+        else:
+            return jsonify({"error": f"Model '{url}' not found."}), 404
+    except Exception as e:
+        app.logger.error(f"Failed to remove model {url}: {e}", exc_info=True)
+        return jsonify({"error": "An internal error occurred while removing the model."}), 500
+
 
 if __name__ == '__main__':
     # Run the Flask app
