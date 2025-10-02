@@ -4,7 +4,7 @@ from ..models import DownloadLog, DownloadSource
 from ..decorators import web_admin_required
 import sys
 import os
-sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..', '..', 'PF-Repo'))
+sys.path.append('/app/PF-Repo')
 from downloader import HeadlessDownloader
 
 pandora_box_bp = Blueprint(

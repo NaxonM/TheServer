@@ -6,6 +6,7 @@ services:
     container_name: ${COMPOSE_PROJECT_NAME}-app
     restart: unless-stopped
     volumes:
+      - ./PF-Repo:/app/PF-Repo
       - ${APP_DATA_PATH:-./data}:/data
       - downloads:/data/downloads  # Mount the shared volume
     env_file:
