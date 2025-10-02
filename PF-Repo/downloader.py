@@ -442,41 +442,44 @@ class HeadlessDownloader:
             download_dir = os.path.dirname(output_path)
             os.makedirs(download_dir, exist_ok=True)
             
+            # Use a temporary directory to isolate the download and identify the new file
+            temp_dir = os.path.join(download_dir, f"temp_{download_id}")
+            os.makedirs(temp_dir, exist_ok=True)
+            
             try:
-                # Generic download call
-                video.download(path=output_path, quality=final_quality, callback=progress_callback)
-                if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
-                    raise FileNotFoundError(f"Download failed to create file: {output_path}")
-            except Exception as e:
-                logger.warning(f"Direct download to '{output_path}' failed: {e}. Falling back to temporary directory.")
+                # Always download to the temporary directory, as the underlying library is inconsistent with the 'path' argument.
+                video.download(path=temp_dir, quality=final_quality, callback=progress_callback)
                 
-                temp_dir = os.path.join(download_dir, f"temp_{download_id}")
-                os.makedirs(temp_dir, exist_ok=True)
-                files_before = set(os.listdir(temp_dir))
-                
-                try:
-                    video.download(path=temp_dir, quality=final_quality, callback=progress_callback)
-                    files_after = set(os.listdir(temp_dir))
-                    new_files = files_after - files_before
+                # Find the downloaded file (assuming it's the only/largest file)
+                downloaded_files = [f for f in os.listdir(temp_dir) if os.path.isfile(os.path.join(temp_dir, f))]
+                if not downloaded_files:
+                    # Some downloaders might place the file in the target dir directly, ignoring 'path'.
+                    if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                        logger.info(f"File '{output_path}' created directly. Assuming download was successful.")
+                    else:
+                        raise FileNotFoundError(f"Download did not create any files in the temporary directory: {temp_dir}")
+                else:
+                    # Get the path of the downloaded file
+                    created_filename = max(downloaded_files, key=lambda f: os.path.getsize(os.path.join(temp_dir, f)))
+                    created_filepath = os.path.join(temp_dir, created_filename)
                     
-                    if not new_files:
-                        raise FileNotFoundError(f"Fallback download created no new files in {temp_dir}")
-
-                    # Find the largest file in the new files, assuming it's the video
-                    largest_file = max(new_files, key=lambda f: os.path.getsize(os.path.join(temp_dir, f)))
-                    created_filepath = os.path.join(temp_dir, largest_file)
+                    # Move the file to the final destination
                     os.rename(created_filepath, output_path)
-                    logger.info(f"Successfully downloaded via temporary directory fallback")
+                    logger.info(f"Successfully downloaded and moved file to '{output_path}'")
 
-                finally:
-                    # Clean up temporary directory
+            finally:
+                # Clean up the temporary directory
+                if os.path.exists(temp_dir):
+                    # Ensure all files are gone before trying to remove the directory
+                    for file in os.listdir(temp_dir):
+                        try:
+                            os.remove(os.path.join(temp_dir, file))
+                        except OSError:
+                            pass
                     try:
-                        if os.path.exists(temp_dir):
-                            for file in os.listdir(temp_dir):
-                                os.remove(os.path.join(temp_dir, file))
-                            os.rmdir(temp_dir)
+                        os.rmdir(temp_dir)
                     except OSError:
-                        pass
+                        logger.warning(f"Could not remove temporary directory: {temp_dir}")
 
             if download_id in self.active_downloads:
                 self.active_downloads[download_id]['status'] = 'COMPLETED'
