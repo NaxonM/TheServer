@@ -118,7 +118,7 @@ class HeadlessDownloader:
         # If slugify results in an empty string (e.g., title was all special characters), fallback.
         return safe_title if safe_title else "video"
 
-    def _select_best_available_quality(self, requested_quality, available_qualities):
+    def _select_best_available_quality(self, requested_quality, available_qualities, video_type=None):
         """
         Selects the best possible quality from the available list based on the requested quality.
         - 'best': Highest available quality.
@@ -141,6 +141,27 @@ class HeadlessDownloader:
             logger.warning("No valid qualities found after normalization.")
             return None
 
+        # Check if this is an Eporner video (uses 'best', 'half', 'worst' format)
+        is_eporner_format = any(q in ['best', 'half', 'worst'] for q in normalized_qualities)
+        
+        if is_eporner_format:
+            # Handle Eporner API format (best, half, worst)
+            if requested_quality in ['best', 'half', 'worst']:
+                if requested_quality in normalized_qualities:
+                    return requested_quality
+                else:
+                    # Fallback to best if requested quality not available
+                    return 'best' if 'best' in normalized_qualities else normalized_qualities[0]
+            else:
+                # Convert resolution-based request to Eporner format
+                if requested_quality in ['720p', '1080p', '1440p', '2160p']:
+                    return 'best' if 'best' in normalized_qualities else normalized_qualities[0]
+                elif requested_quality in ['480p', '540p']:
+                    return 'half' if 'half' in normalized_qualities else 'best' if 'best' in normalized_qualities else normalized_qualities[0]
+                else:
+                    return 'worst' if 'worst' in normalized_qualities else normalized_qualities[0]
+
+        # Handle resolution-based format (720p, 480p, etc.)
         def quality_sort_key(q):
             s = str(q).lower()
             if 'high' in s: return 10000
@@ -408,7 +429,18 @@ class HeadlessDownloader:
                 video_attrs = shared_functions.load_video_attributes(video)
 
             available_qualities = video_attrs.get('qualities', [])
-            final_quality = self._select_best_available_quality(quality, available_qualities)
+            # Determine video type for quality selection
+            video_type = None
+            if isinstance(video, shared_functions.ep_Video):
+                video_type = 'eporner'
+            elif isinstance(video, (shared_functions.xv_Video, shared_functions.xn_Video)):
+                video_type = 'xvideos'
+            elif isinstance(video, shared_functions.ph_Video):
+                video_type = 'pornhub'
+            elif isinstance(video, shared_functions.hq_Video):
+                video_type = 'hqporner'
+            
+            final_quality = self._select_best_available_quality(quality, available_qualities, video_type)
 
             if final_quality is None:
                 logger.error(f"Could not determine a valid download quality for {remote_url} with requested quality '{quality}'. Available: {available_qualities}")
@@ -446,6 +478,23 @@ class HeadlessDownloader:
                             # Use the first available quality as fallback
                             final_quality = available_qualities[0]
                             logger.warning(f"Requested quality not available for XVideos, using: {final_quality}")
+                    
+                    # Additional check: try to get the actual available qualities from the video
+                    try:
+                        if hasattr(video, 'get_available_qualities'):
+                            actual_qualities = video.get_available_qualities()
+                            if actual_qualities and final_quality not in actual_qualities:
+                                # Find the closest match
+                                for q in actual_qualities:
+                                    if str(q).lower() == str(final_quality).lower():
+                                        final_quality = q
+                                        break
+                                else:
+                                    # Use the first available quality
+                                    final_quality = actual_qualities[0]
+                                    logger.warning(f"Quality validation failed for XVideos, using: {final_quality}")
+                    except Exception as e:
+                        logger.warning(f"Could not validate XVideos qualities: {e}")
                 
                 try:
                     # Try downloading to directory first
@@ -459,10 +508,12 @@ class HeadlessDownloader:
                         logger.info(f"Successfully downloaded directly to {output_path}")
                     except Exception as fallback_e:
                         logger.error(f"Both directory and direct download failed: {fallback_e}")
-                        # Try one more fallback: download without quality parameter
+                        # Try one more fallback: download with a different quality
                         try:
-                            logger.info("Trying download without quality parameter as final fallback")
-                            video.download(path=download_dir, callback=progress_callback, downloader=self.threading_mode)
+                            logger.info("Trying download with different quality as final fallback")
+                            # Try with the first available quality or a default
+                            fallback_quality = 'best' if final_quality != 'best' else 'worst'
+                            video.download(path=download_dir, quality=fallback_quality, callback=progress_callback, downloader=self.threading_mode)
                         except Exception as final_e:
                             logger.error(f"All download methods failed: {final_e}")
                             raise fallback_e
@@ -529,34 +580,44 @@ class HeadlessDownloader:
                             raise FileNotFoundError(f"Download for {remote_url} created multiple files but no recognizable video file in {download_dir}.")
 
             elif isinstance(video, (shared_functions.hq_Video, shared_functions.ep_Video)):
-                quality_key = final_quality
-                if hasattr(video, 'qualities') and isinstance(video.qualities, dict):
-                    # Find the key corresponding to the selected quality value (e.g., find '1080' from '1080p')
-                    for key, value in video.qualities.items():
-                        if str(value) == str(final_quality):
-                            quality_key = key
-                            break
-                    else:
-                        # If exact match not found, try to find the closest quality
-                        available_qualities = list(video.qualities.keys())
-                        logger.warning(f"Exact quality '{final_quality}' not found in available qualities: {available_qualities}")
-                        
-                        # Try to find a quality that contains the resolution number
-                        quality_num = re.sub(r'[^0-9]', '', str(final_quality))
-                        if quality_num:
-                            for key in available_qualities:
-                                if quality_num in str(key):
-                                    quality_key = key
-                                    logger.info(f"Using closest quality match: '{quality_key}' for requested '{final_quality}'")
-                                    break
-                            else:
-                                # If no numeric match, use the first available quality
-                                quality_key = available_qualities[0]
-                                logger.warning(f"No quality match found, using first available: '{quality_key}'")
+                # For Eporner, use the quality directly as it should be in the correct format (best, half, worst)
+                if isinstance(video, shared_functions.ep_Video):
+                    quality_key = final_quality  # Eporner uses 'best', 'half', 'worst' directly
+                else:
+                    # For HQPorner, try to find the correct quality key
+                    quality_key = final_quality
+                    if hasattr(video, 'qualities') and isinstance(video.qualities, dict):
+                        # Find the key corresponding to the selected quality value (e.g., find '1080' from '1080p')
+                        for key, value in video.qualities.items():
+                            if str(value) == str(final_quality):
+                                quality_key = key
+                                break
                         else:
-                            # If no numeric part, use the first available quality
-                            quality_key = available_qualities[0]
-                            logger.warning(f"No numeric quality found, using first available: '{quality_key}'")
+                            # If exact match not found, try to find the closest quality
+                            available_qualities = list(video.qualities.keys())
+                            logger.warning(f"Exact quality '{final_quality}' not found in available qualities: {available_qualities}")
+                            
+                            # Try to find a quality that contains the resolution number
+                            quality_num = re.sub(r'[^0-9]', '', str(final_quality))
+                            if quality_num:
+                                for key in available_qualities:
+                                    if quality_num in str(key):
+                                        quality_key = key
+                                        logger.info(f"Using closest quality match: '{quality_key}' for requested '{final_quality}'")
+                                        break
+                                else:
+                                    # If no numeric match, use the first available quality
+                                    quality_key = available_qualities[0]
+                                    logger.warning(f"No quality match found, using first available: '{quality_key}'")
+                            else:
+                                # If no numeric part, use the first available quality
+                                quality_key = available_qualities[0]
+                                logger.warning(f"No numeric quality found, using first available: '{quality_key}'")
+                            
+                            # Additional validation: make sure the quality_key exists in the qualities dict
+                            if quality_key not in video.qualities:
+                                logger.warning(f"Selected quality key '{quality_key}' not found in qualities dict, using first available")
+                                quality_key = available_qualities[0]
                 
                 try:
                     video.download(path=output_path, quality=quality_key, callback=progress_callback, no_title=True)
@@ -601,7 +662,15 @@ class HeadlessDownloader:
                 except Exception as e:
                     logger.warning(f"Custom PornHub downloader failed: {e}. Falling back to segment-based download.")
                     self.active_downloads[download_id]['unit'] = 'segments'
-                    video.download(path=output_path, quality=final_quality, downloader=self.threading_mode, display=progress_callback, remux=remux)
+                    try:
+                        video.download(path=output_path, quality=final_quality, downloader=self.threading_mode, display=progress_callback, remux=remux)
+                    except Exception as ph_e:
+                        logger.warning(f"PornHub download with quality '{final_quality}' failed: {ph_e}. Trying with 'best' quality.")
+                        try:
+                            video.download(path=output_path, quality='best', downloader=self.threading_mode, display=progress_callback, remux=remux)
+                        except Exception as ph_final_e:
+                            logger.error(f"All PornHub download methods failed: {ph_final_e}")
+                            raise ph_final_e
 
             else:
                 # Generic fallback for other providers (MissAV, xHamster, SpankBang, etc.)

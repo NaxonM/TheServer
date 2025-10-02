@@ -27,6 +27,10 @@ original_direct_download_link = ep_module.Video.direct_download_link
 def patched_direct_download_link(self, quality, mode):
     try:
         return original_direct_download_link(self, quality, mode)
+    except TypeError as e:
+        if "exceptions must derive from BaseException" in str(e):
+            raise RuntimeError("No URLs available? Please report that") from e
+        raise e
     except Exception as e:
         if "No URLs available" in str(e):
             raise RuntimeError("No URLs available? Please report that") from e
@@ -471,7 +475,11 @@ def load_video_attributes(video):
         # Fallback quality options if none were found
         if not qualities:
             logger.warning(f"No qualities found for video '{title}', providing default options")
-            qualities = ['720p', '480p', '360p']  # Default quality options
+            # Use API-appropriate quality strings based on video type
+            if isinstance(video, ep_Video):
+                qualities = ['best', 'half', 'worst']  # Eporner API format
+            else:
+                qualities = ['720p', '480p', '360p']  # Default resolution format
             
         data = {
             "title": title,
