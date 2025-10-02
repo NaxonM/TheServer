@@ -1,6 +1,6 @@
 FROM python:3.11-slim
 WORKDIR /app
-RUN pip install Flask Flask-SQLAlchemy Flask-Login gunicorn psutil requests Werkzeug Flask-Limiter Flask-WTF gevent redis
+RUN pip install Flask Flask-SQLAlchemy Flask-Login gunicorn psutil requests Werkzeug Flask-Limiter Flask-WTF gevent redis python-slugify
 COPY ./src /app
 EXPOSE 8000
 CMD ["gunicorn", "--workers", "4", "--worker-class", "gevent", "--bind", "0.0.0.0:8000", "wsgi:app"]
