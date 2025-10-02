@@ -5,6 +5,8 @@ import requests
 import uuid
 import time
 import itertools
+import re
+from slugify import slugify
 from werkzeug.utils import secure_filename
 
 # Assuming these imports are still needed and correct
@@ -95,6 +97,21 @@ class HeadlessDownloader:
         except Exception as e:
             logger.error(f"An unexpected error occurred during registration of '{filename}': {e}")
 
+    def _sanitize_filename(self, title):
+        """
+        A more robust filename sanitization function.
+        - Uses slugify to handle non-ASCII characters gracefully.
+        - Falls back to a default if the title is empty or invalid.
+        """
+        if not title:
+            return "video"
+        # Call slugify in a more compatible way to avoid argument errors with different library versions.
+        # This will convert the title to a URL-friendly slug.
+        safe_title = slugify(title)
+        safe_title = safe_title.replace('-', '_')
+        # If slugify results in an empty string (e.g., title was all special characters), fallback.
+        return safe_title if safe_title else "video"
+
     def download_video_by_url(self, url, output_dir=None, quality='best', source_url=None, thumbnail=None):
         """
         Main entry point for downloading a single video.
@@ -106,15 +123,15 @@ class HeadlessDownloader:
                 raise ValueError(f"Could not find video for URL: {url}")
 
             # Determine if progress is measured in bytes or segments.
-            # Most modern video downloads (like HQPorner, Eporner) are byte-based (MP4).
-            # Others (like PornHub) use segmented streams (HLS/DASH).
-            # Determine if progress is measured in bytes or segments
-            is_segment_download = isinstance(video, shared_functions.ph_Video)
+            # This helps the frontend display progress more accurately.
+            is_segment_download = isinstance(video, shared_functions.ph_Video) and not hasattr(video, '_custom_downloader')
             progress_unit = 'segments' if is_segment_download else 'bytes'
+
 
             attrs = shared_functions.load_video_attributes(video)
             unsafe_title = attrs.get('title', 'video')
-            safe_title = secure_filename(unsafe_title)
+            safe_title = self._sanitize_filename(unsafe_title)
+
 
             # Use the provided thumbnail or try to get it from the video attributes
             final_thumbnail = thumbnail or attrs.get('thumbnail')
@@ -161,6 +178,52 @@ class HeadlessDownloader:
                 del self.active_downloads[download_id]
 
 
+    def _custom_pornhub_downloader(self, video, output_path, quality, progress_callback):
+        """
+        Custom downloader for PornHub to get byte-based progress.
+        This bypasses the library's segment-based progress reporting.
+        """
+        download_url = video.get_download_url(quality)
+        if not download_url:
+            raise Exception("Could not get a valid M3U8 download URL.")
+
+        # Let's assume the library gives us an M3U8 playlist URL
+        with requests.get(download_url, stream=True, timeout=self.timeout) as r:
+            r.raise_for_status()
+            playlist_content = r.text
+            base_url = os.path.dirname(download_url)
+            ts_urls = [line.strip() for line in playlist_content.split('\n') if line.strip() and not line.startswith('#')]
+
+            total_size = 0
+            # Some M3U8 files might not have full URLs
+            full_ts_urls = [url if url.startswith('http') else f"{base_url}/{url}" for url in ts_urls]
+
+            # First, get the total size of all segments
+            for ts_url in full_ts_urls:
+                try:
+                    with requests.head(ts_url, timeout=self.timeout) as ts_head:
+                        ts_head.raise_for_status()
+                        total_size += int(ts_head.headers.get('content-length', 0))
+                except requests.RequestException as e:
+                    logger.warning(f"Could not get size for segment {ts_url}: {e}")
+
+            downloaded_size = 0
+            progress_callback(0, total_size) # Initial progress update
+
+            with open(output_path, 'wb') as f:
+                for i, ts_url in enumerate(full_ts_urls):
+                    try:
+                        with requests.get(ts_url, stream=True, timeout=self.timeout) as ts_r:
+                            ts_r.raise_for_status()
+                            for chunk in ts_r.iter_content(chunk_size=8192):
+                                f.write(chunk)
+                                downloaded_size += len(chunk)
+                                progress_callback(downloaded_size, total_size)
+                    except requests.RequestException as e:
+                        logger.error(f"Failed to download segment {i+1}/{len(full_ts_urls)}: {e}")
+                        # Decide if you want to retry or fail the whole download
+                        raise e # Re-raise to fail the download
+
     def perform_download(self, video, output_path, remote_url, quality, download_id, source_url=None, thumbnail=None):
         """
         The actual download logic, with progress callback.
@@ -168,46 +231,73 @@ class HeadlessDownloader:
         def progress_callback(pos, total):
             current_time = time.time()
             if download_id in self.active_downloads:
-                # For segmented downloads, total might be segments. We prefer bytes.
-                # Let's try to get the total size in bytes if available.
-                total_bytes = total
-                if self.active_downloads[download_id]['unit'] != 'bytes':
-                    # This part is tricky as not all libraries provide total size for segmented streams.
-                    # We will assume `pos` is segment count and `total` is total segments.
-                    # A better implementation would require library support for byte progress.
-                    # For now, we will report segment-based progress and calculate speed based on segment completion.
-                    pass # Placeholder for future byte-based conversion logic
-
                 last_update = self.active_downloads[download_id].get('last_update', current_time)
                 last_progress = self.active_downloads[download_id].get('progress', 0)
 
                 time_diff = current_time - last_update
                 progress_diff = pos - last_progress
 
-                # Speed calculation is only meaningful for byte-based downloads
                 speed_bps = 0
-                if self.active_downloads[download_id]['unit'] == 'bytes' and time_diff > 0:
+                if self.active_downloads[download_id]['unit'] == 'bytes' and time_diff > 0.5: # Update speed every half second
                     speed_bps = (progress_diff / time_diff) * 8
+                elif self.active_downloads[download_id].get('speed_bps'):
+                    speed_bps = self.active_downloads[download_id]['speed_bps'] # Keep last speed if interval too short
 
                 self.active_downloads[download_id].update({
                     "progress": pos,
-                    "total": total_bytes,
+                    "total": total,
                     "speed_bps": speed_bps,
                     "last_update": current_time
                 })
 
         try:
-            # Call the appropriate download method based on the video object type.
-            if isinstance(video, shared_functions.ph_Video):
+            # --- Quality Check ---
+            # For libraries that support it, check if the quality exists.
+            available_qualities = []
+            if hasattr(video, 'qualities') and video.qualities:
+                available_qualities = list(video.qualities.keys())
+            elif hasattr(video, 'get_available_qualities'):
+                available_qualities = video.get_available_qualities()
+
+            if available_qualities and quality not in available_qualities:
+                logger.warning(f"Quality '{quality}' not found for {remote_url}. Available: {available_qualities}. Falling back to 'best'.")
+                quality = 'best'
+
+            # --- Download Execution ---
+            if hasattr(video, '_custom_pornhub_downloader'): # Use our custom handler for PornHub
+                 self.active_downloads[download_id]['unit'] = 'bytes'
+                 self._custom_pornhub_downloader(video, output_path, quality, progress_callback)
+            elif isinstance(video, shared_functions.ph_Video):
                 # PornHub downloads are segment-based and use the 'display' parameter for progress.
-                video.download(path=output_path, quality=quality, downloader=self.threading_mode, display=progress_callback, remux=remux, no_title=True)
+                # The library's download method for this class does not accept 'no_title'.
+                video.download(path=output_path, quality=quality, downloader=self.threading_mode, display=progress_callback, remux=remux)
             elif isinstance(video, (shared_functions.hq_Video, shared_functions.ep_Video)):
                 # HQPorner and Eporner have a simpler download method signature for byte-based downloads.
                 video.download(path=output_path, quality=quality, callback=progress_callback, no_title=True)
+            elif isinstance(video, (shared_functions.xv_Video, shared_functions.xn_Video)):
+                # These libraries expect a directory path and create their own (unsanitized) filename.
+                # They also require the 'downloader' argument.
+                # We let them create the file, then we find and rename it to our sanitized name.
+                download_dir = os.path.dirname(output_path)
+                os.makedirs(download_dir, exist_ok=True)
+
+                files_before = set(os.listdir(download_dir))
+                video.download(path=download_dir, quality=quality, callback=progress_callback, downloader=self.threading_mode)
+                files_after = set(os.listdir(download_dir))
+
+                new_files = files_after - files_before
+                if len(new_files) == 1:
+                    created_filename = new_files.pop()
+                    created_filepath = os.path.join(download_dir, created_filename)
+                    logger.info(f"Library created file '{created_filename}', renaming to '{os.path.basename(output_path)}'")
+                    os.rename(created_filepath, output_path)
+                elif len(new_files) == 0:
+                     logger.error(f"Download for {remote_url} seemed to succeed but no new file was created in {download_dir}.")
+                else:
+                     logger.warning(f"Multiple files created for {remote_url} in {download_dir}. Cannot determine which one to rename.")
             else:
-                # This is the default for other byte-based downloaders (e.g., XVideos, XNXX).
-                # They use the 'callback' parameter for progress and may support threading/remuxing.
-                video.download(path=output_path, quality=quality, downloader=self.threading_mode, callback=progress_callback, remux=remux, no_title=True)
+                # Fallback for any other libraries. Assume they take the full path and don't need the downloader arg.
+                video.download(path=output_path, quality=quality, callback=progress_callback)
 
             if download_id in self.active_downloads:
                 self.active_downloads[download_id]['status'] = 'COMPLETED'
@@ -365,8 +455,8 @@ class HeadlessDownloader:
     def fetch_videos_from_source(self, source_type, query, providers=None, limit=None, delay=None):
         """
         Fetches and yields video data from a model, playlist, or search, with optional rate limiting.
+        This version is enhanced to return more metadata for a richer UI experience.
         """
-        # Temporarily override config settings if provided
         original_delay = shared_functions.config.request_delay
         if delay is not None:
             try:
@@ -375,7 +465,6 @@ class HeadlessDownloader:
             except (ValueError, TypeError):
                 logger.warning(f"Invalid delay value '{delay}' provided. Using default.")
 
-        # Use provided limit, or fall back to the instance's result_limit
         effective_limit = self.result_limit
         if limit is not None:
             try:
@@ -392,21 +481,50 @@ class HeadlessDownloader:
                     logger.info(f"Result limit of {effective_limit} reached. Stopping fetch.")
                     break
                 try:
-                    title = getattr(video, 'title', 'Untitled Video')
-                    if not title or title == 'video':
-                        title = 'Untitled Video'
-                    thumbnail = getattr(video, 'thumbnail', None)
+                    # To provide a richer UI, we now fetch all attributes.
+                    # This introduces a slight delay per video but is necessary for the feature.
+                    attrs = shared_functions.load_video_attributes(video)
+
+                    # The URL might not be a direct attribute, so we ensure it's present.
+                    url = getattr(video, 'url', None)
+                    if not url and 'url' in attrs:
+                        url = attrs['url']
+                    if not url:
+                         logger.warning(f"Could not determine URL for a video in the list for query: {query}. Skipping.")
+                         continue
+
+                    # --- Quality Discovery ---
+                    qualities = []
+                    if hasattr(video, 'qualities') and video.qualities:
+                        qualities = list(video.qualities.keys())
+                    elif hasattr(video, 'get_available_qualities'):
+                        qualities = video.get_available_qualities()
+                    elif hasattr(video, 'files') and isinstance(video.files, dict):
+                        qualities = list(video.files.keys())
+
+                    if not qualities:
+                        qualities = ['best']
+                    if 'best' not in qualities:
+                        qualities.insert(0, 'best')
+
+                    # Sort qualities numerically (e.g., 1080p, 720p)
+                    sorted_qualities = sorted(list(set(qualities)), key=lambda x: int(re.sub(r'[^0-9]', '', x)) if re.sub(r'[^0-9]', '', x) else 0, reverse=True)
+
                     yield {
-                        "title": title,
-                        "url": video.url,
-                        "thumbnail": thumbnail
+                        "title": attrs.get('title', 'Untitled Video'),
+                        "url": url,
+                        "thumbnail": attrs.get('thumbnail'),
+                        "author": attrs.get('author'),
+                        "tags": attrs.get('tags', []),
+                        "length": attrs.get('length'),
+                        "publish_date": attrs.get('publish_date'),
+                        "qualities": sorted_qualities
                     }
                     video_count += 1
                 except Exception as e:
                     logger.error(f"Could not process a video from {query}. Error: {e}\n{traceback.format_exc()}")
                     continue
         finally:
-            # Restore original delay to not affect other operations
             shared_functions.config.request_delay = original_delay
             logger.info(f"Restored request delay to {original_delay}s")
 
@@ -424,28 +542,35 @@ class HeadlessDownloader:
             attrs = shared_functions.load_video_attributes(video)
 
             qualities = []
-            # Attempt to get qualities for different video types. This requires knowledge
-            # of the underlying libraries.
+            # Attempt to get qualities from multiple possible attributes.
             if hasattr(video, 'qualities') and video.qualities:
-                # Common pattern for pornhub-api and similar libraries
                 qualities = list(video.qualities.keys())
             elif hasattr(video, 'get_available_qualities'):
-                # Pattern for hqporner-api
                 qualities = video.get_available_qualities()
             elif hasattr(video, 'files') and isinstance(video.files, dict):
-                # Pattern for eporner-api where qualities are keys in a 'files' dict
                 qualities = list(video.files.keys())
+            elif 'qualities' in attrs and attrs['qualities']:
+                qualities = attrs['qualities']
+            # Add a fallback for xnxx/xvideos which do not have discoverable qualities.
+            if not qualities and ('xnxx.com' in url or 'xvideos.com' in url):
+                qualities = ['high', 'low']
 
-            # If no specific qualities are found, provide a default list.
+            # If no specific qualities are found, default to a sensible list.
             if not qualities:
-                qualities = ['best', 'worst', '1080p', '720p', '480p']
+                qualities = ['best']
+
+            # Ensure 'best' is always an option
+            if 'best' not in qualities:
+                qualities.insert(0, 'best')
 
             info = {
                 "title": attrs.get('title', 'Untitled Video'),
                 "thumbnail": attrs.get('thumbnail'),
                 "author": attrs.get('author'),
                 "tags": attrs.get('tags', []),
-                "qualities": sorted(list(set(qualities)), reverse=True) # Ensure unique and sorted
+                "length": attrs.get('length'),
+                "publish_date": attrs.get('publish_date'),
+                "qualities": sorted(list(set(qualities)), key=lambda x: int(re.sub(r'[^0-9]', '', x)) if re.sub(r'[^0-9]', '', x) else 0, reverse=True)
             }
             logger.info(f"Successfully fetched video info for {url}: {info['title']}")
             return info

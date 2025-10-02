@@ -1,16 +1,10 @@
-PHUB
-missav_api
-xhamster_api
-hqporner_api
-eporner_api
-xnxx_api
-xvideos_api
-eaf_base_api
-spankbang_api
-colorama
-PySide6
+-i https://pypi.tuna.tsinghua.edu.cn/simple
+Pornhub-api @ git+https://github.com/dmdhrumilm/Pornhub-api.git
+xv-api
+xnxx-api
+hqporner-api
+eporner-api
+Flask
+gunicorn
 requests
-httpx
-hue_shift
-Markdown
-mutagen
+python-slugify

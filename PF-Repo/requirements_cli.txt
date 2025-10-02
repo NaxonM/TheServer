@@ -16,3 +16,4 @@ spankbang_api
 Flask
 Werkzeug
 gunicorn
+python-slugify
