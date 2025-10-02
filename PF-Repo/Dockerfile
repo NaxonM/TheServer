@@ -7,9 +7,9 @@ WORKDIR /usr/src/app
 # Copy the application's code from the host to the container
 COPY . .
 
-# Install any needed packages specified in requirements_cli.txt
+# Install any needed packages specified in requirements.txt
 # We use the same requirements file as it now contains Flask
-RUN pip install --no-cache-dir -r requirements_cli.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Create the directory for downloads within the container
 RUN mkdir -p /downloads
