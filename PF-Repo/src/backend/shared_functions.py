@@ -336,7 +336,13 @@ def load_video_attributes(video):
             qualities = []
             if hasattr(video, 'qualities') and isinstance(video.qualities, tuple):
                 qualities = [q.quality for q in video.qualities if hasattr(q, 'quality')]
-            elif hasattr(video, 'qualities'):
+            elif hasattr(video, 'get_qualities'):
+                try:
+                    qualities = [q.quality for q in video.get_qualities()]
+                except Exception as e:
+                    logger.warning(f"video.get_qualities() failed for PornHub: {e}")
+
+            if not qualities and hasattr(video, 'qualities'):
                 # Handle other formats of qualities attribute
                 if isinstance(video.qualities, dict):
                     qualities = list(video.qualities.keys())
@@ -365,7 +371,6 @@ def load_video_attributes(video):
             qualities = []
             if hasattr(video, 'get_available_qualities'):
                 try:
-                    video.get_available_qualities()
                     qualities = video.get_available_qualities()
                 except Exception as e:
                     logger.warning(f"get_available_qualities failed for {video.__class__.__name__}: {e}")
