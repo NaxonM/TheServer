@@ -130,6 +130,17 @@ class HeadlessDownloader:
             logger.warning("No available qualities found for this video.")
             return None
 
+        # Normalize available qualities to strings and remove duplicates
+        normalized_qualities = []
+        for q in available_qualities:
+            q_str = str(q).strip()
+            if q_str and q_str not in normalized_qualities:
+                normalized_qualities.append(q_str)
+        
+        if not normalized_qualities:
+            logger.warning("No valid qualities found after normalization.")
+            return None
+
         def quality_sort_key(q):
             s = str(q).lower()
             if 'high' in s: return 10000
@@ -140,7 +151,7 @@ class HeadlessDownloader:
             return -1
 
         # Sort the qualities from best to worst
-        sorted_qualities = sorted(list(set(available_qualities)), key=quality_sort_key, reverse=True)
+        sorted_qualities = sorted(normalized_qualities, key=quality_sort_key, reverse=True)
         logger.debug(f"Available qualities sorted: {sorted_qualities}")
 
         # Handle abstract quality settings
@@ -153,17 +164,23 @@ class HeadlessDownloader:
             return sorted_qualities[-1]
 
         # Handle specific quality requests (e.g., '1080p')
+        # First try exact match
         if requested_quality in sorted_qualities:
             return requested_quality
+        
+        # Try case-insensitive match
+        for q in sorted_qualities:
+            if str(q).lower() == str(requested_quality).lower():
+                return q
 
         # If the specific quality is not found, find the next best (lower) resolution.
         try:
             # Extract numeric part of the requested quality (e.g., 720 from '720p')
-            requested_res = int(re.sub(r'[^0-9]', '', requested_quality))
+            requested_res = int(re.sub(r'[^0-9]', '', str(requested_quality)))
 
             # Iterate through sorted qualities to find the first one that is <= requested
             for q in sorted_qualities:
-                q_res_str = re.sub(r'[^0-9]', '', q)
+                q_res_str = re.sub(r'[^0-9]', '', str(q))
                 if q_res_str:
                     q_res = int(q_res_str)
                     if q_res <= requested_res:
@@ -278,49 +295,92 @@ class HeadlessDownloader:
         Custom downloader for PornHub to get byte-based progress.
         This bypasses the library's segment-based progress reporting.
         """
-        download_url = video.get_download_url(quality)
-        if not download_url:
-            raise Exception("Could not get a valid M3U8 download URL.")
-
-        # Let's assume the library gives us an M3U8 playlist URL
-        with requests.get(download_url, stream=True, timeout=self.timeout) as r:
-            r.raise_for_status()
-            playlist_content = r.text
-            base_url = os.path.dirname(download_url)
-            ts_urls = [line.strip() for line in playlist_content.split('\n') if line.strip() and not line.startswith('#')]
-
-            total_size = 0
-            # Some M3U8 files might not have full URLs
-            full_ts_urls = [url if url.startswith('http') else f"{base_url}/{url}" for url in ts_urls]
-
-            # First, get the total size of all segments
-            for ts_url in full_ts_urls:
+        try:
+            # Try to get download URL using different methods
+            download_url = None
+            
+            # Method 1: Try get_download_url if it exists
+            if hasattr(video, 'get_download_url'):
                 try:
-                    with requests.head(ts_url, timeout=self.timeout) as ts_head:
-                        ts_head.raise_for_status()
-                        total_size += int(ts_head.headers.get('content-length', 0))
-                except requests.RequestException as e:
-                    logger.warning(f"Could not get size for segment {ts_url}: {e}")
+                    download_url = video.get_download_url(quality)
+                except Exception as e:
+                    logger.warning(f"get_download_url failed: {e}")
+            
+            # Method 2: Try to get from qualities attribute
+            if not download_url and hasattr(video, 'qualities'):
+                qualities = video.qualities
+                if isinstance(qualities, dict) and quality in qualities:
+                    download_url = qualities[quality]
+                elif isinstance(qualities, (list, tuple)):
+                    # Try to find a quality that matches
+                    for q in qualities:
+                        if hasattr(q, 'quality') and str(q.quality) == str(quality):
+                            download_url = q.url if hasattr(q, 'url') else str(q)
+                            break
+            
+            # Method 3: Try to get from video attributes
+            if not download_url and hasattr(video, 'url'):
+                # For PornHub, we might need to construct the download URL
+                video_url = video.url
+                if 'pornhub.com' in video_url:
+                    # Try to get the video ID and construct download URL
+                    import re
+                    video_id_match = re.search(r'viewkey=([a-zA-Z0-9]+)', video_url)
+                    if video_id_match:
+                        video_id = video_id_match.group(1)
+                        # This is a simplified approach - in reality, you'd need to parse the page
+                        download_url = f"https://www.pornhub.com/view_video.php?viewkey={video_id}"
+            
+            if not download_url:
+                raise Exception("Could not get a valid download URL for PornHub video.")
 
-            if total_size == 0:
-                raise Exception("Could not determine total download size from M3U8 segments.")
+            # If we got a page URL instead of direct download URL, we need to parse it
+            if 'pornhub.com/view_video' in download_url:
+                # For now, fall back to the library's built-in download method
+                raise Exception("Need to use library's built-in download method for PornHub")
 
-            downloaded_size = 0
-            progress_callback(0, total_size) # Initial progress update
+            # Let's assume the library gives us an M3U8 playlist URL
+            with requests.get(download_url, stream=True, timeout=self.timeout) as r:
+                r.raise_for_status()
+                playlist_content = r.text
+                base_url = os.path.dirname(download_url)
+                ts_urls = [line.strip() for line in playlist_content.split('\n') if line.strip() and not line.startswith('#')]
 
-            with open(output_path, 'wb') as f:
-                for i, ts_url in enumerate(full_ts_urls):
+                total_size = 0
+                # Some M3U8 files might not have full URLs
+                full_ts_urls = [url if url.startswith('http') else f"{base_url}/{url}" for url in ts_urls]
+
+                # First, get the total size of all segments
+                for ts_url in full_ts_urls:
                     try:
-                        with requests.get(ts_url, stream=True, timeout=self.timeout) as ts_r:
-                            ts_r.raise_for_status()
-                            for chunk in ts_r.iter_content(chunk_size=8192):
-                                f.write(chunk)
-                                downloaded_size += len(chunk)
-                                progress_callback(downloaded_size, total_size)
+                        with requests.head(ts_url, timeout=self.timeout) as ts_head:
+                            ts_head.raise_for_status()
+                            total_size += int(ts_head.headers.get('content-length', 0))
                     except requests.RequestException as e:
-                        logger.error(f"Failed to download segment {i+1}/{len(full_ts_urls)}: {e}")
-                        # Decide if you want to retry or fail the whole download
-                        raise e # Re-raise to fail the download
+                        logger.warning(f"Could not get size for segment {ts_url}: {e}")
+
+                if total_size == 0:
+                    raise Exception("Could not determine total download size from M3U8 segments.")
+
+                downloaded_size = 0
+                progress_callback(0, total_size) # Initial progress update
+
+                with open(output_path, 'wb') as f:
+                    for i, ts_url in enumerate(full_ts_urls):
+                        try:
+                            with requests.get(ts_url, stream=True, timeout=self.timeout) as ts_r:
+                                ts_r.raise_for_status()
+                                for chunk in ts_r.iter_content(chunk_size=8192):
+                                    f.write(chunk)
+                                    downloaded_size += len(chunk)
+                                    progress_callback(downloaded_size, total_size)
+                        except requests.RequestException as e:
+                            logger.error(f"Failed to download segment {i+1}/{len(full_ts_urls)}: {e}")
+                            # Decide if you want to retry or fail the whole download
+                            raise e # Re-raise to fail the download
+        except Exception as e:
+            logger.warning(f"Custom PornHub downloader failed: {e}")
+            raise e
 
     def perform_download(self, video, output_path, remote_url, quality, download_id, source_url=None, thumbnail=None, video_attrs=None):
         """
@@ -362,8 +422,35 @@ class HeadlessDownloader:
                 os.makedirs(download_dir, exist_ok=True)
                 files_before = set(os.listdir(download_dir))
                 
+                # For XVideos, we need to validate the quality against available qualities
+                if isinstance(video, shared_functions.xv_Video):
+                    # Get available qualities from the video object
+                    available_qualities = []
+                    if hasattr(video, 'qualities') and video.qualities:
+                        if isinstance(video.qualities, dict):
+                            available_qualities = list(video.qualities.keys())
+                        elif isinstance(video.qualities, (list, tuple)):
+                            available_qualities = [str(q) for q in video.qualities]
+                    
+                    # If we have available qualities, validate the final_quality
+                    if available_qualities and final_quality not in available_qualities:
+                        # Try to find a valid quality
+                        quality_found = False
+                        for quality in available_qualities:
+                            if str(quality).lower() == str(final_quality).lower():
+                                final_quality = quality
+                                quality_found = True
+                                break
+                        
+                        if not quality_found:
+                            # Use the first available quality as fallback
+                            final_quality = available_qualities[0]
+                            logger.warning(f"Requested quality not available for XVideos, using: {final_quality}")
+                
                 try:
+                    # Try downloading to directory first
                     video.download(path=download_dir, quality=final_quality, callback=progress_callback, downloader=self.threading_mode)
+                    logger.info(f"Download to directory completed for {remote_url}")
                 except Exception as e:
                     logger.warning(f"Download to directory failed, trying direct download to file: {e}")
                     # Fallback: try downloading directly to the target file
@@ -372,35 +459,49 @@ class HeadlessDownloader:
                         logger.info(f"Successfully downloaded directly to {output_path}")
                     except Exception as fallback_e:
                         logger.error(f"Both directory and direct download failed: {fallback_e}")
-                        raise fallback_e
+                        # Try one more fallback: download without quality parameter
+                        try:
+                            logger.info("Trying download without quality parameter as final fallback")
+                            video.download(path=download_dir, callback=progress_callback, downloader=self.threading_mode)
+                        except Exception as final_e:
+                            logger.error(f"All download methods failed: {final_e}")
+                            raise fallback_e
                 else:
                     # Check if any new files were created
                     files_after = set(os.listdir(download_dir))
                     new_files = files_after - files_before
                     
-                    if len(new_files) == 1:
+                    # Also check if the target file was created directly
+                    if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                        logger.info(f"Download file exists at expected location: {output_path}")
+                    elif len(new_files) == 1:
                         created_filename = new_files.pop()
                         created_filepath = os.path.join(download_dir, created_filename)
                         logger.info(f"Library created file '{created_filename}', renaming to '{os.path.basename(output_path)}'")
                         os.rename(created_filepath, output_path)
                     elif len(new_files) == 0:
-                        # Try to check if the file was created with expected name
-                        expected_filename = os.path.basename(output_path)
-                        if os.path.exists(output_path):
-                            logger.info(f"Download file exists at expected location: {output_path}")
+                        # Look for any video files that might have been created (including existing ones)
+                        video_extensions = ['.mp4', '.avi', '.mov', '.mkv', '.webm', '.flv']
+                        video_files = []
+                        for file in os.listdir(download_dir):
+                            if any(file.lower().endswith(ext) for ext in video_extensions):
+                                file_path = os.path.join(download_dir, file)
+                                if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+                                    # Check if this file was recently modified (within last 5 minutes)
+                                    import time
+                                    file_mtime = os.path.getmtime(file_path)
+                                    current_time = time.time()
+                                    if current_time - file_mtime < 300:  # 5 minutes
+                                        video_files.append((file, file_path, file_mtime))
+                        
+                        if video_files:
+                            # Sort by modification time (most recent first)
+                            video_files.sort(key=lambda x: x[2], reverse=True)
+                            most_recent_file = video_files[0]
+                            logger.info(f"Found recently created video file: {most_recent_file[0]}, moving to {os.path.basename(output_path)}")
+                            os.rename(most_recent_file[1], output_path)
                         else:
-                            # Look for any video files that might have been created
-                            video_extensions = ['.mp4', '.avi', '.mov', '.mkv', '.webm', '.flv']
-                            for file in os.listdir(download_dir):
-                                if any(file.lower().endswith(ext) for ext in video_extensions):
-                                    # Check file modification time to see if it's recent
-                                    file_path = os.path.join(download_dir, file)
-                                    if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
-                                        logger.info(f"Found potential downloaded video file: {file}, moving to {os.path.basename(output_path)}")
-                                        os.rename(file_path, output_path)
-                                        break
-                            else:
-                                raise FileNotFoundError(f"Download for {remote_url} failed to create any new files in {download_dir}.")
+                            raise FileNotFoundError(f"Download for {remote_url} failed to create any new files in {download_dir}.")
                     else:
                         logger.warning(f"Multiple new files created ({len(new_files)}), attempting to locate video file")
                         # Multiple files created, find the video file
@@ -428,13 +529,34 @@ class HeadlessDownloader:
                             raise FileNotFoundError(f"Download for {remote_url} created multiple files but no recognizable video file in {download_dir}.")
 
             elif isinstance(video, (shared_functions.hq_Video, shared_functions.ep_Video)):
-                quality_key =final_quality
+                quality_key = final_quality
                 if hasattr(video, 'qualities') and isinstance(video.qualities, dict):
                     # Find the key corresponding to the selected quality value (e.g., find '1080' from '1080p')
                     for key, value in video.qualities.items():
                         if str(value) == str(final_quality):
                             quality_key = key
                             break
+                    else:
+                        # If exact match not found, try to find the closest quality
+                        available_qualities = list(video.qualities.keys())
+                        logger.warning(f"Exact quality '{final_quality}' not found in available qualities: {available_qualities}")
+                        
+                        # Try to find a quality that contains the resolution number
+                        quality_num = re.sub(r'[^0-9]', '', str(final_quality))
+                        if quality_num:
+                            for key in available_qualities:
+                                if quality_num in str(key):
+                                    quality_key = key
+                                    logger.info(f"Using closest quality match: '{quality_key}' for requested '{final_quality}'")
+                                    break
+                            else:
+                                # If no numeric match, use the first available quality
+                                quality_key = available_qualities[0]
+                                logger.warning(f"No quality match found, using first available: '{quality_key}'")
+                        else:
+                            # If no numeric part, use the first available quality
+                            quality_key = available_qualities[0]
+                            logger.warning(f"No numeric quality found, using first available: '{quality_key}'")
                 
                 try:
                     video.download(path=output_path, quality=quality_key, callback=progress_callback, no_title=True)

@@ -19,6 +19,20 @@ from hqporner_api import Client as hq_Client, Video as hq_Video
 from xnxx_api import Client as xn_Client, Video as xn_Video
 from xvideos_api import Client as xv_Client, Video as xv_Video
 from eporner_api import Client as ep_Client, Video as ep_Video, Category as ep_Category # Used in the main file
+
+# Patch for eporner_api TypeError issue
+import eporner_api.eporner_api as ep_module
+original_direct_download_link = ep_module.Video.direct_download_link
+
+def patched_direct_download_link(self, quality, mode):
+    try:
+        return original_direct_download_link(self, quality, mode)
+    except Exception as e:
+        if "No URLs available" in str(e):
+            raise RuntimeError("No URLs available? Please report that") from e
+        raise e
+
+ep_module.Video.direct_download_link = patched_direct_download_link
 from missav_api.missav_api import Video as mv_Video, Client as mv_Client
 from xhamster_api import Client as xh_Client, Video as xh_Video
 from spankbang_api import Client as sp_Client, Video as sp_Video
