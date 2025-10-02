@@ -1,9 +1,13 @@
 -i https://pypi.tuna.tsinghua.edu.cn/simple
-Pornhub-api @ git+https://github.com/dmdhrumilm/Pornhub-api.git
-xv-api
+phub
+xvideos-api
 xnxx-api
 hqporner-api
 eporner-api
+youporn-api
+spankbang-api
+missav-api
+xhamster-api
 Flask
 gunicorn
 requests

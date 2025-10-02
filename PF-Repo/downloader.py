@@ -439,6 +439,8 @@ class HeadlessDownloader:
                 video_type = 'pornhub'
             elif isinstance(video, shared_functions.hq_Video):
                 video_type = 'hqporner'
+            elif isinstance(video, shared_functions.yp_Video):
+                video_type = 'youporn'
             
             final_quality = self._select_best_available_quality(quality, available_qualities, video_type)
 
@@ -579,12 +581,12 @@ class HeadlessDownloader:
                         else:
                             raise FileNotFoundError(f"Download for {remote_url} created multiple files but no recognizable video file in {download_dir}.")
 
-            elif isinstance(video, (shared_functions.hq_Video, shared_functions.ep_Video)):
+            elif isinstance(video, (shared_functions.hq_Video, shared_functions.ep_Video, shared_functions.yp_Video)):
                 # For Eporner, use the quality directly as it should be in the correct format (best, half, worst)
                 if isinstance(video, shared_functions.ep_Video):
                     quality_key = final_quality  # Eporner uses 'best', 'half', 'worst' directly
                 else:
-                    # For HQPorner, try to find the correct quality key
+                    # For HQPorner/YouPorn, try to find the correct quality key
                     quality_key = final_quality
                     if hasattr(video, 'qualities') and isinstance(video.qualities, dict):
                         # Find the key corresponding to the selected quality value (e.g., find '1080' from '1080p')
@@ -623,9 +625,9 @@ class HeadlessDownloader:
                     video.download(path=output_path, quality=quality_key, callback=progress_callback, no_title=True)
                     # Verify the file was created successfully
                     if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
-                        raise FileNotFoundError(f"HQPorner/Eporner download failed to create file: {output_path}")
+                        raise FileNotFoundError(f"HQPorner/Eporner/YouPorn download failed to create file: {output_path}")
                 except Exception as e:
-                    logger.warning(f"HQPorner/Eporner direct download failed: {e}")
+                    logger.warning(f"HQPorner/Eporner/YouPorn direct download failed: {e}")
                     # Fallback: try downloading to a temporary directory similar to XNXX/XVIDEOS
                     download_dir = os.path.dirname(output_path)
                     temp_dir = os.path.join(download_dir, f"temp_{download_id}")
@@ -644,7 +646,7 @@ class HeadlessDownloader:
                             os.rename(created_filepath, output_path)
                             logger.info(f"Successfully downloaded via temporary directory fallback")
                         else:
-                            raise FileNotFoundError(f"HQPorner/Eporner fallback download created no new files in {temp_dir}")
+                            raise FileNotFoundError(f"HQPorner/Eporner/YouPorn fallback download created no new files in {temp_dir}")
                     finally:
                         # Clean up temporary directory if it exists
                         try:
@@ -784,6 +786,8 @@ class HeadlessDownloader:
                 video_generator = shared_functions.xh_client.get_actress(query)
             elif shared_functions.spankbang_pattern.match(query):
                 video_generator = shared_functions.sp_client.get_performer(query)
+            elif shared_functions.youporn_pattern.match(query):
+                video_generator = shared_functions.yp_client.get_performer(query)
             else:
                 raise ValueError(f"Unsupported model URL: {query}")
 
@@ -824,6 +828,8 @@ class HeadlessDownloader:
                 active_generators.append(shared_functions.xh_client.search(query))
             if 'spankbang' in providers:
                 active_generators.append(shared_functions.sp_client.search(query))
+            if 'youporn' in providers:
+                active_generators.append(shared_functions.yp_client.search(query))
 
             if not active_generators:
                 logger.warning(f"No valid search providers selected for query: '{query}'")

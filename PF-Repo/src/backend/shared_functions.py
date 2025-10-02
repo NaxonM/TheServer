@@ -19,6 +19,8 @@ from hqporner_api import Client as hq_Client, Video as hq_Video
 from xnxx_api import Client as xn_Client, Video as xn_Video
 from xvideos_api import Client as xv_Client, Video as xv_Video
 from eporner_api import Client as ep_Client, Video as ep_Video, Category as ep_Category # Used in the main file
+from youporn_api import Client as yp_Client
+from youporn_api.youporn_api import Video as yp_Video
 
 # Patch for eporner_api TypeError issue
 import eporner_api.eporner_api as ep_module
@@ -51,15 +53,16 @@ xh_client = xh_Client()
 sp_client = sp_Client()
 hq_client = hq_Client()
 xn_client = xn_Client()
+yp_client = yp_Client()
 core = BaseCore() # We need that sometimes in Porn Fetch's main class e.g., thumbnail fetching
 core_ph = None
 core_internet_checks = BaseCore(config=config, auto_init=True)
 
 def refresh_clients(enable_kill_switch=False):
-    global mv_client, ep_client, ph_client, xv_client, xh_client, sp_client, hq_client, xn_client, core, core_ph
+    global mv_client, ep_client, ph_client, xv_client, xh_client, sp_client, hq_client, xn_client, yp_client, core, core_ph
 
     # One BaseCore per site, with its own RuntimeConfig (isolated headers/cookies)
-    core_common = BaseCore(config=config, auto_init=True)   # if you want a “generic” core
+    core_common = BaseCore(config=config, auto_init=True)   # if you want a "generic" core
     core_hq    = BaseCore(config=config, auto_init=True)
     core_mv    = BaseCore(config=config, auto_init=True)
     core_ep    = BaseCore(config=config, auto_init=True)
@@ -68,6 +71,7 @@ def refresh_clients(enable_kill_switch=False):
     core_xh    = BaseCore(config=config, auto_init=True)
     core_xn    = BaseCore(config=config, auto_init=True)
     core_sp    = BaseCore(config=config, auto_init=True)
+    core_yp    = BaseCore(config=config, auto_init=True)
 
     if enable_kill_switch:
         core_common.enable_kill_switch()
@@ -78,6 +82,7 @@ def refresh_clients(enable_kill_switch=False):
         core_xv.enable_kill_switch()
         core_xh.enable_kill_switch()
         core_xn.enable_kill_switch()
+        core_yp.enable_kill_switch()
 
     # Instantiate clients with their site-specific cores
     mv_client = mv_Client(core=core_mv)
@@ -88,6 +93,7 @@ def refresh_clients(enable_kill_switch=False):
     sp_client = sp_Client(core=core_sp)
     hq_client = hq_Client(core=core_hq)
     xn_client = xn_Client(core=core_xn)
+    yp_client = yp_Client(core=core_yp)
 
     core = core_common
 
@@ -127,6 +133,7 @@ eporner_pattern = re.compile(r'(.*?)eporner.com(.*)')
 missav_pattern = re.compile(r'(.*?)missav(.*?)')
 xhamster_pattern = re.compile(r'(.*?)xhamster(.*?)')
 spankbang_pattern = re.compile(r'(.*?)spankbang(.*?)')
+youporn_pattern = re.compile(r'(.*?)youporn(.*?)')
 
 
 default_configuration = f"""[Setup]
@@ -199,6 +206,9 @@ def check_video(url, is_url=True):
         elif spankbang_pattern.search(str(url)) and not isinstance(url, sp_Video):
             return sp_client.get_video(url)
 
+        elif youporn_pattern.search(str(url)) and not isinstance(url, yp_Video):
+            return yp_client.get_video(url)
+
         if isinstance(url, ph_Video):
             url.fetch("page@") # If url is a PornHub Video object it does have the `fetch` method
             return url
@@ -222,6 +232,9 @@ def check_video(url, is_url=True):
             return url
 
         elif isinstance(url, sp_Video):
+            return url
+
+        elif isinstance(url, yp_Video):
             return url
 
         elif isinstance(url, str) and not str(url).endswith(".html"):
@@ -427,7 +440,7 @@ def load_video_attributes(video):
                 elif isinstance(streams, (list, tuple)):
                     qualities = [str(s.get('quality', s.get('format', s))) for s in streams if isinstance(s, dict)]
 
-        elif isinstance(video, (mv_Video, xh_Video, sp_Video)):
+        elif isinstance(video, (mv_Video, xh_Video, sp_Video, yp_Video)):
             # Generic handling for providers with similar structures
             if hasattr(video, 'fetch'): video.fetch()
             title = video.title
@@ -437,7 +450,7 @@ def load_video_attributes(video):
             publish_date = video.publish_date if hasattr(video, 'publish_date') else "N/A"
             thumbnail = video.thumbnail
             
-            # Enhanced quality fetching for MissAV/XHamster/SpankBang
+            # Enhanced quality fetching for MissAV/XHamster/SpankBang/YouPorn
             qualities = []
             if hasattr(video, 'qualities'):
                 if isinstance(video.qualities, dict):
