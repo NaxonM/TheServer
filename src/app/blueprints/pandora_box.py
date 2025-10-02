@@ -2,7 +2,10 @@ from flask import Blueprint, render_template, request, jsonify
 from flask_login import login_required
 from ..models import DownloadLog, DownloadSource
 from ..decorators import web_admin_required
-from PF-Repo.downloader import HeadlessDownloader
+import sys
+import os
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..', '..', 'PF-Repo'))
+from downloader import HeadlessDownloader
 
 pandora_box_bp = Blueprint(
     'pandora_box',
