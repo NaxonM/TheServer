@@ -46,9 +46,37 @@ def download_video():
         return jsonify({"error": "Invalid JSON payload"}), 400
 
     quality = data.get('quality', 'best')
+
+    # Handle batch download separately for immediate partial success reporting
+    if 'urls' in data and isinstance(data['urls'], list):
+        urls = data['urls']
+        failed_urls = []
+        successful_count = 0
+
+        app.logger.info(f"Batch download request for {len(urls)} URLs with quality: {quality}")
+
+        for url in urls:
+            try:
+                downloader.download_video_by_url(url=url, output_dir=DOWNLOAD_PATH, quality=quality)
+                successful_count += 1
+            except Exception as e:
+                app.logger.error(f"Failed to download {url}: {e}", exc_info=True)
+                failed_urls.append(url)
+                if not downloader.ignore_errors:
+                    app.logger.error("Halting batch download because ignore_errors is False.")
+                    break
+
+        response_data = {
+            "message": f"Batch download completed. Successful: {successful_count}, Failed: {len(failed_urls)}",
+            "failed_urls": failed_urls
+        }
+
+        status_code = 207 if failed_urls else 200  # Multi-status for partial success
+        return jsonify(response_data), status_code
+
+    # General case for single operations (url, model, etc.)
     download_task = None
     task_info = ""
-
     try:
         if 'url' in data:
             url = data['url']
@@ -67,26 +95,12 @@ def download_video():
 
         elif 'search' in data:
             query = data['search']
-            providers = data.get('providers') # Can be None
+            providers = data.get('providers')  # Can be None
             task_info = f"Search: '{query}' on providers: {providers or 'all'}"
             download_task = lambda: downloader.download_from_search(query=query, providers=providers, output_dir=DOWNLOAD_PATH, quality=quality)
 
-        elif 'urls' in data and isinstance(data['urls'], list):
-            urls = data['urls']
-            task_info = f"Batch of {len(urls)} URLs"
-            def batch_download_task():
-                for url in urls:
-                    try:
-                        downloader.download_video_by_url(url=url, output_dir=DOWNLOAD_PATH, quality=quality)
-                    except Exception as e:
-                        app.logger.error(f"Error downloading URL {url} in batch: {e}", exc_info=True)
-                        if not downloader.ignore_errors:
-                            app.logger.error("Halting batch download because ignore_errors is set to False.")
-                            raise # Re-raise the exception to stop the background thread.
-            download_task = batch_download_task
-
         else:
-            return jsonify({"error": "Missing or invalid download key in request body. Use 'url', 'model', 'playlist', 'search', or 'urls'."}), 400
+            return jsonify({"error": "Missing or invalid download key in request body. Use 'url', 'model', 'playlist', or 'search'."}), 400
 
         app.logger.info(f"Received download request for {task_info} with quality: {quality}")
 

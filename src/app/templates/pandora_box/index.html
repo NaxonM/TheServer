@@ -1015,8 +1015,14 @@
                         body: JSON.stringify({ urls: cleanedUrls, quality: quality })
                     });
                     const result = await response.json();
-                    if (response.ok) {
-                        this.showAlert(`Successfully requested batch download of ${cleanedUrls.length} videos.`, false);
+                    if (response.ok || response.status === 207) {
+                        let message = `Successfully requested batch download of ${cleanedUrls.length} videos.`;
+                        if (result.failed_urls && result.failed_urls.length > 0) {
+                            message += ` Failed: ${result.failed_urls.length} (${result.failed_urls.join(', ')})`;
+                            this.showAlert(message, true);  // Show as error for partial failure
+                        } else {
+                            this.showAlert(message, false);
+                        }
                         this.fetchStatus(); // Immediately poll for status to provide instant feedback
 
                         // If the download was initiated from the fetched videos list, clear it for a cleaner UI.

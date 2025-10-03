@@ -433,8 +433,8 @@ class HeadlessDownloader:
             final_quality = self._select_best_available_quality(quality, available_qualities)
 
             if final_quality is None:
-                logger.warning(f"Could not determine a valid download quality for {remote_url} with requested quality '{quality}'. Available: {available_qualities}. Falling back to 'best'.")
-                final_quality = 'best'
+                logger.error(f"Could not determine a valid download quality for {remote_url} with requested quality '{quality}'. Available: {available_qualities}")
+                raise ValueError(f"No suitable download quality found for {remote_url}")
             elif final_quality != quality:
                 logger.warning(f"Quality '{quality}' not found for {remote_url}. Available: {available_qualities}. Falling back to '{final_quality}'.")
 
@@ -446,39 +446,51 @@ class HeadlessDownloader:
             os.makedirs(temp_dir, exist_ok=True)
             
             try:
-                # Provider-specific download logic
-                if isinstance(video, shared_functions.ph_Video):
-                    # PornHub's download method does not support the 'callback' argument.
-                    video.download(path=temp_dir, quality=final_quality)
-                elif isinstance(video, shared_functions.xn_Video):
-                    # XNXX requires a 'downloader' argument.
-                    video.download(path=temp_dir, quality=final_quality, downloader=shared_functions.xn_client)
-                elif isinstance(video, shared_functions.xv_Video):
-                    # XVIDEOS also requires a 'downloader' argument.
-                    video.download(path=temp_dir, quality=final_quality, downloader=shared_functions.xv_client)
-                elif isinstance(video, shared_functions.hq_Video):
-                    try:
-                        # HQPorner has an issue where it might not find the specified quality.
+                # Provider-specific download logic with fallback
+                download_success = False
+                try:
+                    if isinstance(video, shared_functions.ph_Video):
+                        # PornHub's download method does not support the 'callback' argument.
+                        video.download(path=temp_dir, quality=final_quality)
+                    elif isinstance(video, shared_functions.xn_Video):
+                        # XNXX requires a 'downloader' argument.
+                        video.download(path=temp_dir, quality=final_quality, downloader=shared_functions.xn_client)
+                    elif isinstance(video, shared_functions.xv_Video):
+                        # XVIDEOS also requires a 'downloader' argument.
+                        video.download(path=temp_dir, quality=final_quality, downloader=shared_functions.xv_client)
+                    elif isinstance(video, shared_functions.hq_Video):
+                        try:
+                            # HQPorner has an issue where it might not find the specified quality.
+                            video.download(path=temp_dir, quality=final_quality, callback=progress_callback)
+                        except KeyError:
+                            logger.warning(f"HQPorner download failed for quality '{final_quality}'. Falling back to 'best' quality.")
+                            video.download(path=temp_dir, quality='best', callback=progress_callback)
+                    else:
+                        # Generic download call for other providers.
                         video.download(path=temp_dir, quality=final_quality, callback=progress_callback)
-                    except KeyError:
-                        logger.warning(f"HQPorner download failed for quality '{final_quality}'. Falling back to 'best' quality.")
-                        video.download(path=temp_dir, quality='best', callback=progress_callback)
-                else:
-                    # Generic download call for other providers.
-                    video.download(path=temp_dir, quality=final_quality, callback=progress_callback)
-            except Exception as e:
-                logger.warning(f"Download failed with quality '{final_quality}' for {remote_url}. Error: {e}. Falling back to 'best'.")
-                # Fallback to 'best' quality
-                if isinstance(video, shared_functions.ph_Video):
-                    video.download(path=temp_dir, quality='best')
-                elif isinstance(video, shared_functions.xn_Video):
-                    video.download(path=temp_dir, quality='best', downloader=shared_functions.xn_client)
-                elif isinstance(video, shared_functions.xv_Video):
-                    video.download(path=temp_dir, quality='best', downloader=shared_functions.xv_client)
-                elif isinstance(video, shared_functions.hq_Video):
-                    video.download(path=temp_dir, quality='best', callback=progress_callback)
-                else:
-                    video.download(path=temp_dir, quality='best', callback=progress_callback)
+                    download_success = True
+                except (ValueError, KeyError, Exception) as e:
+                    if "No suitable download quality found" in str(e) or "quality" in str(e).lower():
+                        logger.warning(f"Quality '{final_quality}' failed for {remote_url}. Falling back to 'best'.")
+                        try:
+                            if isinstance(video, shared_functions.ph_Video):
+                                video.download(path=temp_dir, quality='best')
+                            elif isinstance(video, shared_functions.xn_Video):
+                                video.download(path=temp_dir, quality='best', downloader=shared_functions.xn_client)
+                            elif isinstance(video, shared_functions.xv_Video):
+                                video.download(path=temp_dir, quality='best', downloader=shared_functions.xv_client)
+                            elif isinstance(video, shared_functions.hq_Video):
+                                video.download(path=temp_dir, quality='best', callback=progress_callback)
+                            else:
+                                video.download(path=temp_dir, quality='best', callback=progress_callback)
+                            download_success = True
+                        except Exception as fallback_e:
+                            logger.error(f"Even 'best' quality failed for {remote_url}: {fallback_e}")
+                    else:
+                        logger.error(f"Unexpected error during download of {remote_url}: {e}")
+                
+                if not download_success:
+                    raise ValueError(f"Download failed for {remote_url} even with fallback.")
 
                 # Find the downloaded file and move it to the final destination
                 downloaded_files = [f for f in os.listdir(temp_dir) if os.path.isfile(os.path.join(temp_dir, f))]
@@ -736,42 +748,24 @@ class HeadlessDownloader:
     def get_video_info(self, url):
         """
         Fetches metadata and available qualities for a single video URL without downloading.
+        Ensures fallback qualities are always returned.
         """
         try:
             logger.info(f"Fetching video info for URL: {url}")
             video = shared_functions.check_video(url=url)
             if not video:
                 logger.warning(f"Video not found or unsupported for URL: {url}")
-                # Return fallback structure
-                return {
-                    "title": "Unsupported URL",
-                    "author": "N/A",
-                    "length": 0,
-                    "tags": [],
-                    "publish_date": "N/A",
-                    "thumbnail": None,
-                    "qualities": ['best']  # Minimal fallback
-                }
+                return {"error": "Video not found or unsupported URL.", "qualities": []}
 
             attrs = shared_functions.load_video_attributes(video)
             logger.info(f"Successfully fetched video info for {url}: {attrs.get('title')}")
             logger.info(f"Available qualities for '{attrs.get('title')}': {attrs.get('qualities', [])}")
             
-            # Additional debugging for quality issues
+            # Ensure qualities always has fallback
+            provider = self.detect_provider(url)
             if not attrs.get('qualities'):
-                logger.warning(f"No qualities found for video '{attrs.get('title')}' at URL: {url}. Using fallback.")
-                # Ensure fallback qualities based on provider
-                provider_video = shared_functions.check_video(url=url)
-                if hasattr(provider_video, '__class__'):
-                    provider_name = provider_video.__class__.__name__.lower()
-                    if 'eporner' in provider_name:
-                        attrs['qualities'] = ['best', 'half', 'worst']
-                    elif 'hqporner' in provider_name:
-                        attrs['qualities'] = ['best', '1080p', '720p', '480p']
-                    else:
-                        attrs['qualities'] = ['best', '1080p', '720p', '480p', '360p']
-                else:
-                    attrs['qualities'] = ['best', '1080p', '720p', '480p', '360p']
+                attrs['qualities'] = self.getQualityOptions(provider)
+                logger.warning(f"No qualities fetched for {url}. Using provider defaults: {attrs['qualities']}")
             else:
                 logger.info(f"Fetched {len(attrs.get('qualities', []))} quality options for '{attrs.get('title')}'")
                 
@@ -779,13 +773,6 @@ class HeadlessDownloader:
 
         except Exception as e:
             logger.error(f"Failed to get video info for {url}: {e}", exc_info=True)
-            return {
-                "error": f"An internal error occurred while fetching video info: {str(e)}",
-                "title": "Error",
-                "author": "N/A",
-                "length": 0,
-                "tags": [],
-                "publish_date": "N/A",
-                "thumbnail": None,
-                "qualities": ['best']  # Ensure always present for UI
-            }
+            provider = self.detect_provider(url)
+            fallback_qualities = self.getQualityOptions(provider)
+            return {"error": f"An internal error occurred while fetching video info: {str(e)}", "qualities": fallback_qualities}
