@@ -331,32 +331,58 @@ def load_video_attributes(video):
             tags = [tag.name for tag in video.tags]
             publish_date = video.date
             thumbnail = video.image.url
-            
-            # Enhanced quality fetching for PornHub
-            qualities = []
-            if hasattr(video, 'qualities') and isinstance(video.qualities, tuple):
-                qualities = [q.quality for q in video.qualities if hasattr(q, 'quality')]
-            elif hasattr(video, 'get_qualities'):
-                try:
-                    qualities = [q.quality for q in video.get_qualities()]
-                except Exception as e:
-                    logger.warning(f"video.get_qualities() failed for PornHub: {e}")
 
-            if not qualities and hasattr(video, 'qualities'):
-                # Handle other formats of qualities attribute
-                if isinstance(video.qualities, dict):
-                    qualities = list(video.qualities.keys())
-                elif isinstance(video.qualities, (list, tuple)):
-                    qualities = [str(q) for q in video.qualities]
-                    
-            # Try to refresh qualities if not found
+            # Refactored quality fetching for PornHub with detailed logging
+            qualities = []
+            logger.debug(f"Starting quality fetch for PornHub video: '{title}'")
+
+            # Attempt 1: Check pre-populated video.qualities (most common)
+            if hasattr(video, 'qualities') and isinstance(video.qualities, tuple) and video.qualities:
+                logger.debug("Attempt 1: Found 'video.qualities' tuple.")
+                qualities = [q.quality for q in video.qualities if hasattr(q, 'quality')]
+                logger.debug(f"Extracted qualities: {qualities}")
+
+            # Attempt 2: Try calling video.get_qualities()
+            if not qualities and hasattr(video, 'get_qualities'):
+                logger.debug("Attempt 2: Calling 'video.get_qualities()'.")
+                try:
+                    retrieved_qualities = video.get_qualities()
+                    if retrieved_qualities:
+                        qualities = [q.quality for q in retrieved_qualities if hasattr(q, 'quality')]
+                        logger.debug(f"Extracted qualities: {qualities}")
+                    else:
+                        logger.debug("'video.get_qualities()' returned empty list.")
+                except Exception as e:
+                    logger.warning(f"'video.get_qualities()' failed for PornHub: {e}", exc_info=True)
+
+            # Attempt 3: Try forcing a refresh with video.fetch_qualities()
             if not qualities and hasattr(video, 'fetch_qualities'):
+                logger.debug("Attempt 3: Calling 'video.fetch_qualities()'.")
                 try:
                     video.fetch_qualities()
-                    if hasattr(video, 'qualities') and isinstance(video.qualities, tuple):
+                    if hasattr(video, 'qualities') and isinstance(video.qualities, tuple) and video.qualities:
+                        logger.debug("Found 'video.qualities' after fetching.")
                         qualities = [q.quality for q in video.qualities if hasattr(q, 'quality')]
+                        logger.debug(f"Extracted qualities: {qualities}")
+                    else:
+                        logger.debug("'video.fetch_qualities()' did not populate qualities.")
                 except Exception as e:
-                    logger.warning(f"fetch_qualities failed for PornHub: {e}")
+                    logger.warning(f"'video.fetch_qualities()' failed for PornHub: {e}", exc_info=True)
+
+            # Attempt 4: Fallback for other formats of the qualities attribute
+            if not qualities and hasattr(video, 'qualities') and video.qualities:
+                logger.debug("Attempt 4: Checking 'video.qualities' for other formats (dict/list).")
+                if isinstance(video.qualities, dict):
+                    qualities = list(video.qualities.keys())
+                    logger.debug(f"Extracted qualities from dict: {qualities}")
+                elif isinstance(video.qualities, (list, tuple)):
+                    qualities = [str(q) for q in video.qualities]
+                    logger.debug(f"Extracted qualities from list/tuple: {qualities}")
+
+            if qualities:
+                logger.info(f"Successfully fetched qualities for '{title}': {qualities}")
+            else:
+                logger.warning(f"Could not fetch any qualities for PornHub video: '{title}'")
 
         elif isinstance(video, (xv_Video, xn_Video)):
             if hasattr(video, 'fetch'): video.fetch()
@@ -366,57 +392,89 @@ def load_video_attributes(video):
             tags = video.tags
             publish_date = video.publish_date
             thumbnail = video.thumbnail_url[0] if isinstance(video.thumbnail_url, list) else video.thumbnail_url
-            
-            # Enhanced quality fetching for XVideos/XNXX
+
+            # Refactored quality fetching for XVideos/XNXX with detailed logging
             qualities = []
+            provider_name = video.__class__.__name__
+            logger.debug(f"Starting quality fetch for {provider_name} video: '{title}'")
+
+            # Attempt 1: Call get_available_qualities()
             if hasattr(video, 'get_available_qualities'):
+                logger.debug("Attempt 1: Calling 'get_available_qualities()'.")
                 try:
-                    qualities = video.get_available_qualities()
+                    retrieved_qualities = video.get_available_qualities()
+                    if isinstance(retrieved_qualities, (list, tuple)) and retrieved_qualities:
+                        qualities = [str(q) for q in retrieved_qualities]
+                        logger.debug(f"Extracted qualities: {qualities}")
                 except Exception as e:
-                    logger.warning(f"get_available_qualities failed for {video.__class__.__name__}: {e}")
-                    
-            if not qualities and hasattr(video, 'qualities'):
+                    logger.warning(f"'get_available_qualities' failed for {provider_name}: {e}", exc_info=True)
+
+            # Attempt 2: Check 'qualities' attribute
+            if not qualities and hasattr(video, 'qualities') and video.qualities:
+                logger.debug("Attempt 2: Checking 'qualities' attribute.")
                 if isinstance(video.qualities, dict):
                     qualities = list(video.qualities.keys())
+                    logger.debug(f"Extracted qualities from dict: {qualities}")
                 elif isinstance(video.qualities, (list, tuple)):
                     qualities = [str(q) for q in video.qualities]
-                    
-            # Try alternative method: fetch formats directly
-            if not qualities and hasattr(video, 'formats'):
+                    logger.debug(f"Extracted qualities from list/tuple: {qualities}")
+
+            # Attempt 3: Check 'formats' attribute
+            if not qualities and hasattr(video, 'formats') and video.formats:
+                logger.debug("Attempt 3: Checking 'formats' attribute.")
                 formats = video.formats
                 if isinstance(formats, dict):
                     qualities = [str(q) for q in formats.keys()]
+                    logger.debug(f"Extracted qualities from formats dict: {qualities}")
                 elif isinstance(formats, (list, tuple)):
                     qualities = [str(f.get('quality', f.get('format', f))) for f in formats if isinstance(f, dict)]
+                    logger.debug(f"Extracted qualities from formats list: {qualities}")
+
+            # Attempt 4: Specific check for XNXX 'highest_quality' attribute
+            if not qualities and isinstance(video, xn_Video) and hasattr(video, 'highest_quality') and video.highest_quality:
+                logger.debug("Attempt 4: Found 'highest_quality' attribute for XNXX video.")
+                qualities = [video.highest_quality]
+                logger.debug(f"Extracted quality: {qualities}")
+
+            if qualities:
+                logger.info(f"Successfully fetched qualities for '{title}': {qualities}")
+            else:
+                logger.warning(f"Could not fetch an explicit quality list for {provider_name} video '{title}'. Downloader will rely on abstract quality settings.")
 
         elif isinstance(video, ep_Video):
-            if hasattr(video, 'fetch'): video.fetch()
+            if hasattr(video, 'fetch'):
+                video.fetch()
             title = video.title
             author = video.author
             length = video.length_minutes * 60 if video.length_minutes else 0
             tags = video.tags
             publish_date = video.publish_date
             thumbnail = video.thumbnail
-            
-            # Enhanced quality fetching for Eporner
+
+            # Refactored quality fetching for Eporner with detailed logging
             qualities = []
-            if hasattr(video, 'qualities'):
+            logger.debug(f"Starting quality fetch for Eporner video: '{title}'")
+
+            # Attempt 1: Check for a 'qualities' or 'available_qualities' attribute
+            logger.debug("Attempt 1: Checking for 'video.qualities' or 'video.available_qualities'.")
+            if hasattr(video, 'qualities') and video.qualities:
                 if isinstance(video.qualities, dict):
-                    qualities = list(video.qualities.keys())
+                    qualities = list(video.qualities.values()) # Eporner sometimes uses a dict of {id: name}
+                    logger.debug(f"Extracted qualities from dict: {qualities}")
                 elif isinstance(video.qualities, (list, tuple)):
                     qualities = [str(q) for q in video.qualities]
-                    
-            # Try alternative method: check for quality list
-            if not qualities and hasattr(video, 'available_qualities'):
-                qualities = list(video.available_qualities) if isinstance(video.available_qualities, (list, tuple)) else []
-                
-            # Fallback: try to extract from formats
-            if not qualities and hasattr(video, 'formats'):
-                formats = video.formats
-                if isinstance(formats, dict):
-                    qualities = [str(q) for q in formats.keys()]
-                elif isinstance(formats, (list, tuple)):
-                    qualities = [str(f.get('quality', f.get('format', f))) for f in formats if isinstance(f, dict)]
+                    logger.debug(f"Extracted qualities from list/tuple: {qualities}")
+            elif hasattr(video, 'available_qualities') and video.available_qualities:
+                 if isinstance(video.available_qualities, (list, tuple)):
+                    qualities = list(video.available_qualities)
+                    logger.debug(f"Extracted qualities from 'available_qualities': {qualities}")
+
+            if qualities:
+                logger.info(f"Successfully fetched qualities for '{title}': {qualities}")
+            else:
+                # Fallback to documented abstract qualities if no explicit list is found
+                logger.warning(f"No explicit quality list found for Eporner video '{title}'. Falling back to documented abstract qualities.")
+                qualities = ['best', 'half', 'worst']
 
         elif isinstance(video, hq_Video):
             if hasattr(video, 'fetch'): video.fetch()
@@ -426,24 +484,44 @@ def load_video_attributes(video):
             tags = video.tags
             publish_date = video.publish_date
             thumbnail = video.get_thumbnails()[0] if video.get_thumbnails() else None
-            
-            # Enhanced quality fetching for HQPorner
+
+            # Refactored quality fetching for HQPorner with detailed logging
             qualities = []
-            if hasattr(video, 'qualities') and isinstance(video.qualities, dict):
-                # HQPorner qualities dict format: {'quality_name': download_url}
-                qualities = list(video.qualities.keys())
-                
-            # Try alternative method: check for quality list
-            if not qualities and hasattr(video, 'available_qualities'):
-                qualities = list(video.available_qualities) if isinstance(video.available_qualities, (list, tuple)) else []
-                
-            # Try another approach: look for formats/streams
-            if not qualities and hasattr(video, 'streams'):
-                streams = video.streams
-                if isinstance(streams, dict):
-                    qualities = [str(q) for q in streams.keys()]
-                elif isinstance(streams, (list, tuple)):
-                    qualities = [str(s.get('quality', s.get('format', s))) for s in streams if isinstance(s, dict)]
+            logger.debug(f"Starting quality fetch for HQPorner video: '{title}'")
+
+            # Attempt 1: Check for 'video.video_qualities' as per documentation
+            logger.debug("Attempt 1: Checking for 'video.video_qualities' list.")
+            if hasattr(video, 'video_qualities') and video.video_qualities:
+                if isinstance(video.video_qualities, (list, tuple)):
+                    qualities = [str(q) for q in video.video_qualities]
+                    logger.debug(f"Extracted qualities from 'video_qualities': {qualities}")
+
+            # Attempt 2: Fallback to checking 'video.qualities' (often a dict)
+            if not qualities and hasattr(video, 'qualities') and video.qualities:
+                logger.debug("Attempt 2: Checking for 'video.qualities' (dict/list).")
+                if isinstance(video.qualities, dict):
+                    # Format is often {'720p': 'url', ...}, so we want the keys
+                    qualities = list(video.qualities.keys())
+                    logger.debug(f"Extracted qualities from 'qualities' dict: {qualities}")
+                elif isinstance(video.qualities, (list, tuple)):
+                    qualities = [str(q) for q in video.qualities]
+                    logger.debug(f"Extracted qualities from 'qualities' list/tuple: {qualities}")
+
+            # Attempt 3: Fallback to checking 'streams'
+            if not qualities and hasattr(video, 'streams') and video.streams:
+                logger.debug("Attempt 3: Checking for 'video.streams'.")
+                if isinstance(video.streams, dict):
+                    qualities = [str(q) for q in video.streams.keys()]
+                    logger.debug(f"Extracted qualities from 'streams' dict: {qualities}")
+                elif isinstance(video.streams, (list, tuple)):
+                    stream_list = video.streams
+                    qualities = [str(s.get('quality', s.get('format', s))) for s in stream_list if isinstance(s, dict)]
+                    logger.debug(f"Extracted qualities from 'streams' list: {qualities}")
+
+            if qualities:
+                logger.info(f"Successfully fetched qualities for '{title}': {qualities}")
+            else:
+                logger.warning(f"Could not fetch an explicit quality list for HQPorner video '{title}'. Downloader will rely on abstract quality settings (e.g., 'best').")
 
         elif isinstance(video, (mv_Video, xh_Video, sp_Video, yp_Video)):
             # Generic handling for providers with similar structures
@@ -454,33 +532,55 @@ def load_video_attributes(video):
             tags = video.tags if hasattr(video, 'tags') else []
             publish_date = video.publish_date if hasattr(video, 'publish_date') else "N/A"
             thumbnail = video.thumbnail
-            
-            # Enhanced quality fetching for MissAV/XHamster/SpankBang/YouPorn
+
+            # Refactored generic quality fetching for other providers with detailed logging
             qualities = []
-            if hasattr(video, 'qualities'):
+            provider_name = video.__class__.__name__
+            logger.debug(f"Starting quality fetch for {provider_name} video: '{title}'")
+
+            # Attempt 1: Check for a documented 'video_qualities' attribute (e.g., Spankbang)
+            if hasattr(video, 'video_qualities') and video.video_qualities:
+                 logger.debug("Attempt 1: Checking for 'video_qualities' attribute.")
+                 if isinstance(video.video_qualities, (list, tuple)):
+                    qualities = [str(q) for q in video.video_qualities]
+                    logger.debug(f"Extracted qualities: {qualities}")
+
+            # Attempt 2: Check for a 'get_available_qualities' method
+            if not qualities and hasattr(video, 'get_available_qualities'):
+                logger.debug("Attempt 2: Calling 'get_available_qualities()'.")
+                try:
+                    retrieved_qualities = video.get_available_qualities()
+                    if isinstance(retrieved_qualities, dict):
+                        qualities = list(retrieved_qualities.keys())
+                    elif isinstance(retrieved_qualities, (list, tuple)):
+                        qualities = [str(q) for q in retrieved_qualities]
+                    logger.debug(f"Extracted qualities: {qualities}")
+                except Exception as e:
+                    logger.warning(f"'get_available_qualities' failed for {provider_name}: {e}", exc_info=True)
+
+            # Attempt 3: Check for a generic 'qualities' attribute
+            if not qualities and hasattr(video, 'qualities') and video.qualities:
+                logger.debug("Attempt 3: Checking for 'qualities' attribute.")
                 if isinstance(video.qualities, dict):
                     qualities = list(video.qualities.keys())
                 elif isinstance(video.qualities, (list, tuple)):
                     qualities = [str(q) for q in video.qualities]
-                    
-            # Try alternative methods
-            if not qualities:
-                # Check for get_available_qualities method
-                if hasattr(video, 'get_available_qualities'):
-                    try:
-                        qualities = video.get_available_qualities()
-                        if isinstance(qualities, dict):
-                            qualities = list(qualities.keys())
-                    except Exception as e:
-                        logger.warning(f"get_available_qualities failed for {video.__class__.__name__}: {e}")
-                        
-                # Check for formats
-                elif hasattr(video, 'formats'):
-                    formats = video.formats
-                    if isinstance(formats, dict):
-                        qualities = [str(q) for q in formats.keys()]
-                    elif isinstance(formats, (list, tuple)):
-                        qualities = [str(f.get('quality', f.get('format', f))) for f in formats if isinstance(f, dict)]
+                logger.debug(f"Extracted qualities: {qualities}")
+
+            # Attempt 4: Check for a generic 'formats' attribute
+            if not qualities and hasattr(video, 'formats') and video.formats:
+                logger.debug("Attempt 4: Checking for 'formats' attribute.")
+                formats = video.formats
+                if isinstance(formats, dict):
+                    qualities = [str(q) for q in formats.keys()]
+                elif isinstance(formats, (list, tuple)):
+                    qualities = [str(f.get('quality', f.get('format', f))) for f in formats if isinstance(f, dict)]
+                logger.debug(f"Extracted qualities: {qualities}")
+
+            if qualities:
+                logger.info(f"Successfully fetched qualities for '{title}': {qualities}")
+            else:
+                logger.warning(f"Could not fetch an explicit quality list for {provider_name} video '{title}'. Downloader will rely on abstract quality settings.")
 
         else:
             logger.error(f"Unsupported video object type: {type(video).__name__}")
