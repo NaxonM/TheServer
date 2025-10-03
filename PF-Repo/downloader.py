@@ -473,7 +473,15 @@ class HeadlessDownloader:
                     if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
                         logger.info(f"File '{output_path}' created directly. Assuming download was successful.")
                     else:
-                        raise FileNotFoundError(f"Download did not create any files in the temporary directory: {temp_dir}")
+                        # Improved error message to pinpoint the source of the failure.
+                        provider_name = video.__class__.__name__
+                        error_message = (
+                            f"The external download library ({provider_name}) failed to create a file "
+                            f"in the temporary directory: {temp_dir}. This is likely an issue with the "
+                            f"provider's API or the library itself."
+                        )
+                        logger.error(error_message)
+                        raise FileNotFoundError(error_message)
                 else:
                     created_filename = max(downloaded_files, key=lambda f: os.path.getsize(os.path.join(temp_dir, f)))
                     created_filepath = os.path.join(temp_dir, created_filename)

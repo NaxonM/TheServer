@@ -125,15 +125,16 @@ options_sponsoring = ["downloaded_videos", "notice_shown"]
 options_android = ["warning_shown"]
 
 
-pornhub_pattern = re.compile(r'(.*?)pornhub(.*)') # can also be .org
-hqporner_pattern = re.compile(r'(.*?)hqporner.com(.*)')
-xnxx_pattern = re.compile(r'(.*?)xnxx.com(.*)')
-xvideos_pattern = re.compile(r'(.*?)xvideos.com(.*)')
-eporner_pattern = re.compile(r'(.*?)eporner.com(.*)')
-missav_pattern = re.compile(r'(.*?)missav(.*?)')
-xhamster_pattern = re.compile(r'(.*?)xhamster(.*?)')
-spankbang_pattern = re.compile(r'(.*?)spankbang(.*?)')
-youporn_pattern = re.compile(r'(.*?)youporn(.*?)')
+# More specific regex patterns to prevent incorrect matching
+pornhub_pattern = re.compile(r'https?://([a-z\d-]+\.)*pornhub\.com/.*')
+hqporner_pattern = re.compile(r'https?://([a-z\d-]+\.)*hqporner\.com/.*')
+xnxx_pattern = re.compile(r'https?://([a-z\d-]+\.)*xnxx\.com/.*')
+xvideos_pattern = re.compile(r'https?://([a-z\d-]+\.)*xvideos\.com/.*')
+eporner_pattern = re.compile(r'https?://([a-z\d-]+\.)*eporner\.com/.*')
+missav_pattern = re.compile(r'https?://([a-z\d-]+\.)*missav\.(com|tv)/.*')
+xhamster_pattern = re.compile(r'https?://([a-z\d-]+\.)*xhamster\.com/.*')
+spankbang_pattern = re.compile(r'https?://([a-z\d-]+\.)*spankbang\.(com|party)/.*')
+youporn_pattern = re.compile(r'https?://([a-z\d-]+\.)*you-?porn\.com/.*')
 
 
 default_configuration = f"""[Setup]
