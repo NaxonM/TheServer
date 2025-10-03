@@ -442,10 +442,12 @@ class HeadlessDownloader:
             download_dir = os.path.dirname(output_path)
             os.makedirs(download_dir, exist_ok=True)
             
+            # Use a temporary directory to isolate the download and identify the new file
             temp_dir = os.path.join(download_dir, f"temp_{download_id}")
             os.makedirs(temp_dir, exist_ok=True)
             
             try:
+<<<<<<< HEAD
                 # Provider-specific download logic with fallback
                 download_success = False
                 try:
@@ -493,25 +495,37 @@ class HeadlessDownloader:
                     raise ValueError(f"Download failed for {remote_url} even with fallback.")
 
                 # Find the downloaded file and move it to the final destination
+=======
+                # Always download to the temporary directory, as the underlying library is inconsistent with the 'path' argument.
+                video.download(path=temp_dir, quality=final_quality, callback=progress_callback)
+                
+                # Find the downloaded file (assuming it's the only/largest file)
+>>>>>>> parent of 057a038 (Update downloader.py)
                 downloaded_files = [f for f in os.listdir(temp_dir) if os.path.isfile(os.path.join(temp_dir, f))]
                 if not downloaded_files:
+                    # Some downloaders might place the file in the target dir directly, ignoring 'path'.
                     if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
                         logger.info(f"File '{output_path}' created directly. Assuming download was successful.")
                     else:
                         raise FileNotFoundError(f"Download did not create any files in the temporary directory: {temp_dir}")
                 else:
+                    # Get the path of the downloaded file
                     created_filename = max(downloaded_files, key=lambda f: os.path.getsize(os.path.join(temp_dir, f)))
                     created_filepath = os.path.join(temp_dir, created_filename)
+                    
+                    # Move the file to the final destination
                     os.rename(created_filepath, output_path)
                     logger.info(f"Successfully downloaded and moved file to '{output_path}'")
 
             finally:
                 # Clean up the temporary directory
                 if os.path.exists(temp_dir):
+                    # Ensure all files are gone before trying to remove the directory
                     for file in os.listdir(temp_dir):
                         try:
                             os.remove(os.path.join(temp_dir, file))
-                        except OSError: pass
+                        except OSError:
+                            pass
                     try:
                         os.rmdir(temp_dir)
                     except OSError:
