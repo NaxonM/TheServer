@@ -433,8 +433,8 @@ class HeadlessDownloader:
             final_quality = self._select_best_available_quality(quality, available_qualities)
 
             if final_quality is None:
-                logger.error(f"Could not determine a valid download quality for {remote_url} with requested quality '{quality}'. Available: {available_qualities}")
-                raise ValueError(f"No suitable download quality found for {remote_url}")
+                logger.warning(f"Could not determine a valid download quality for {remote_url} with requested quality '{quality}'. Available: {available_qualities}. Falling back to 'best'.")
+                final_quality = 'best'
             elif final_quality != quality:
                 logger.warning(f"Quality '{quality}' not found for {remote_url}. Available: {available_qualities}. Falling back to '{final_quality}'.")
 
@@ -466,6 +466,19 @@ class HeadlessDownloader:
                 else:
                     # Generic download call for other providers.
                     video.download(path=temp_dir, quality=final_quality, callback=progress_callback)
+            except Exception as e:
+                logger.warning(f"Download failed with quality '{final_quality}' for {remote_url}. Error: {e}. Falling back to 'best'.")
+                # Fallback to 'best' quality
+                if isinstance(video, shared_functions.ph_Video):
+                    video.download(path=temp_dir, quality='best')
+                elif isinstance(video, shared_functions.xn_Video):
+                    video.download(path=temp_dir, quality='best', downloader=shared_functions.xn_client)
+                elif isinstance(video, shared_functions.xv_Video):
+                    video.download(path=temp_dir, quality='best', downloader=shared_functions.xv_client)
+                elif isinstance(video, shared_functions.hq_Video):
+                    video.download(path=temp_dir, quality='best', callback=progress_callback)
+                else:
+                    video.download(path=temp_dir, quality='best', callback=progress_callback)
 
                 # Find the downloaded file and move it to the final destination
                 downloaded_files = [f for f in os.listdir(temp_dir) if os.path.isfile(os.path.join(temp_dir, f))]
@@ -729,7 +742,16 @@ class HeadlessDownloader:
             video = shared_functions.check_video(url=url)
             if not video:
                 logger.warning(f"Video not found or unsupported for URL: {url}")
-                return {"error": "Video not found or unsupported URL."}
+                # Return fallback structure
+                return {
+                    "title": "Unsupported URL",
+                    "author": "N/A",
+                    "length": 0,
+                    "tags": [],
+                    "publish_date": "N/A",
+                    "thumbnail": None,
+                    "qualities": ['best']  # Minimal fallback
+                }
 
             attrs = shared_functions.load_video_attributes(video)
             logger.info(f"Successfully fetched video info for {url}: {attrs.get('title')}")
@@ -737,7 +759,19 @@ class HeadlessDownloader:
             
             # Additional debugging for quality issues
             if not attrs.get('qualities'):
-                logger.warning(f"No qualities found for video '{attrs.get('title')}' at URL: {url}")
+                logger.warning(f"No qualities found for video '{attrs.get('title')}' at URL: {url}. Using fallback.")
+                # Ensure fallback qualities based on provider
+                provider_video = shared_functions.check_video(url=url)
+                if hasattr(provider_video, '__class__'):
+                    provider_name = provider_video.__class__.__name__.lower()
+                    if 'eporner' in provider_name:
+                        attrs['qualities'] = ['best', 'half', 'worst']
+                    elif 'hqporner' in provider_name:
+                        attrs['qualities'] = ['best', '1080p', '720p', '480p']
+                    else:
+                        attrs['qualities'] = ['best', '1080p', '720p', '480p', '360p']
+                else:
+                    attrs['qualities'] = ['best', '1080p', '720p', '480p', '360p']
             else:
                 logger.info(f"Fetched {len(attrs.get('qualities', []))} quality options for '{attrs.get('title')}'")
                 
@@ -745,4 +779,13 @@ class HeadlessDownloader:
 
         except Exception as e:
             logger.error(f"Failed to get video info for {url}: {e}", exc_info=True)
-            return {"error": f"An internal error occurred while fetching video info: {str(e)}"}
+            return {
+                "error": f"An internal error occurred while fetching video info: {str(e)}",
+                "title": "Error",
+                "author": "N/A",
+                "length": 0,
+                "tags": [],
+                "publish_date": "N/A",
+                "thumbnail": None,
+                "qualities": ['best']  # Ensure always present for UI
+            }

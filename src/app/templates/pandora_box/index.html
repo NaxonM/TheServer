@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="en" class="h-full bg-slate-100">
 <head>
@@ -75,13 +76,13 @@
                                             <span x-show="!isLoading">Fetch Info</span>
                                             <span x-show="isLoading">Fetching...</span>
                                         </button>
-                                    <button @click="document.getElementById('interactive_query_url').value = ''" type="button" class="rounded-md bg-slate-200 px-4 py-3 text-sm font-semibold text-slate-700 shadow-sm hover:bg-slate-300">Clear</button>
+                                        <button @click="document.getElementById('interactive_query_url').value = ''" type="button" class="rounded-md bg-slate-200 px-4 py-3 text-sm font-semibold text-slate-700 shadow-sm hover:bg-slate-300">Clear</button>
                                     </div>
                                 </div>
                             </div>
 
                             <!-- Video Info Display -->
-                            <div x-show="videoInfo" class="space-y-4 p-4 border border-slate-200 rounded-lg bg-slate-50" style="display: none;">
+                            <div x-show="videoInfo" class="space-y-4 p-4 border border-slate-200 rounded-lg bg-slate-50">
                                 <div class="flex items-start space-x-4">
                                     <img :src="videoInfo.thumbnail" x-show="videoInfo.thumbnail" class="h-24 w-40 object-cover rounded-md bg-slate-200 flex-shrink-0" referrerpolicy="no-referrer">
                                     <div x-show="!videoInfo.thumbnail" class="h-24 w-40 rounded-md bg-slate-200 flex items-center justify-center text-xs text-slate-400 flex-shrink-0">No Thumbnail</div>
@@ -110,7 +111,7 @@
                                         </select>
                                     </div>
                                     <div class="flex space-x-2">
-                                         <button @click="submitBatchDownload([videoInfo.url], 'interactive_quality_url')" :disabled="isSaving" class="w-full rounded-md bg-green-600 px-4 py-3 text-sm font-semibold text-white shadow-sm hover:bg-green-500 disabled:opacity-50">
+                                        <button @click="submitBatchDownload([videoInfo.url], 'interactive_quality_url')" :disabled="isSaving" class="w-full rounded-md bg-green-600 px-4 py-3 text-sm font-semibold text-white shadow-sm hover:bg-green-500 disabled:opacity-50">
                                             <span x-show="!isSaving">Download</span>
                                             <span x-show="isSaving">Requesting...</span>
                                         </button>
@@ -152,7 +153,7 @@
                         <!-- Playlist Form -->
                         <div x-show="activeTab === 'playlist'" class="p-4 sm:px-6 space-y-4">
                             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
-                             <div>
+                            <div>
                                 <label for="query_playlist" class="block text-sm font-medium text-slate-700">PornHub Playlist URL</label>
                                 <div class="mt-1"><input type="url" id="query_playlist" class="w-full p-3 border rounded-md shadow-sm border-slate-300" required></div>
                             </div>
@@ -198,11 +199,12 @@
                                     <label class="flex items-center space-x-2"><input type="checkbox" name="providers" value="spankbang" class="rounded border-slate-300 text-purple-600 shadow-sm focus:ring-purple-500"><span>SpankBang</span></label>
                                     <label class="flex items-center space-x-2"><input type="checkbox" name="providers" value="youporn" class="rounded border-slate-300 text-purple-600 shadow-sm focus:ring-purple-500"><span>YouPorn</span></label>
                                 </div>
+                                <p class="mt-2 text-xs text-slate-500">Note: SpankBang may fail due to bot protection; use VPN if needed.</p>
                             </div>
                             <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                                 <div>
                                     <label for="limit_search" class="block text-sm font-medium text-slate-700">Result Limit</label>
-                                    <div class="mt-1"><input type="number" id="limit_search" value="50" min="1" max="1000" class="w-full p-3 border rounded-md shadow-sm border-slate-300" required></div>
+                                    <div class="mt-1"><input type="number" id="limit_search" value="50" min="1" max="200" class="w-full p-3 border rounded-md shadow-sm border-slate-300" required></div>
                                 </div>
                                 <div>
                                     <label for="delay_search" class="block text-sm font-medium text-slate-700">Request Delay (s)</label>
@@ -222,8 +224,8 @@
                         </div>
 
                         <!-- Model Manager -->
-                        <div x-show="activeTab === 'manager'" class="p-4 sm:px-6 space-y-6" x-data="modelManagerPage()" style="display: none;">
-                             <div>
+                        <div x-show="activeTab === 'manager'" class="p-4 sm:px-6 space-y-6" x-data="modelManagerPage()">
+                            <div>
                                 <label for="new_model_url" class="block text-sm font-medium text-slate-700">Add New Model URL</label>
                                 <div class="mt-1 flex space-x-2">
                                     <input type="url" id="new_model_url" placeholder="Enter a supported model/creator URL" class="flex-grow p-3 border rounded-md shadow-sm border-slate-300">
@@ -262,7 +264,7 @@
                         </div>
 
                         <!-- Process File Form -->
-                        <div x-show="activeTab === 'file'" class="p-4 sm:px-6 space-y-4" style="display: none;">
+                        <div x-show="activeTab === 'file'" class="p-4 sm:px-6 space-y-4">
                             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
                             <div>
                                 <label for="url_list" class="block text-sm font-medium text-slate-700">Video URLs (one per line)</label>
@@ -271,8 +273,6 @@
                                 </div>
                                 <p class="mt-2 text-xs text-slate-500">Paste a list of video URLs to download them in a batch.</p>
                             </div>
-                             <div>
-                                <label for="quality_file" class="block text-sm font-medium text-slate-700">Video Quality</label>
                                 <div class="mt-1">
                                     <select id="quality_file" class="w-full p-3 border rounded-md shadow-sm border-slate-300">
                                         <option value="best" selected>Best (Highest)</option>
@@ -671,13 +671,65 @@
             showAlert(message, isError) {
                 // Dispatch a global alert event that the main component can catch and display
                 window.dispatchEvent(new CustomEvent('show-alert', { detail: { message, isError } }));
+            },
+
+            // New function to detect provider from URL
+            detectProvider(url) {
+                if (!url) return null;
+                const hostname = new URL(url).hostname.toLowerCase();
+                if (hostname.includes('pornhub')) return 'pornhub';
+                if (hostname.includes('xvideos')) return 'xvideos';
+                if (hostname.includes('xnxx')) return 'xnxx';
+                if (hostname.includes('eporner')) return 'eporner';
+                if (hostname.includes('hqporner')) return 'hqporner';
+                if (hostname.includes('missav')) return 'missav';
+                if (hostname.includes('xhamster')) return 'xhamster';
+                if (hostname.includes('spankbang')) return 'spankbang';
+                if (hostname.includes('youporn')) return 'youporn';
+                return 'unknown';
+            },
+
+            // New function to get quality options based on provider
+            getQualityOptions(provider) {
+                const options = {
+                    'pornhub': ['best', '1080p', '720p', '480p', '360p'],
+                    'xvideos': ['best', '1080p', '720p', '480p', '360p'],
+                    'xnxx': ['best', '1080p', '720p', '480p', '360p'],
+                    'eporner': ['best', 'half', 'worst'],
+                    'hqporner': ['best', '1080p', '720p', '480p'],
+                    'missav': ['best', '1080p', '720p', '480p'],
+                    'xhamster': ['best', '1080p', '720p', '480p'],
+                    'spankbang': ['best', '1080p', '720p', '480p'],
+                    'youporn': ['best', '1080p', '720p', '480p'],
+                    'unknown': ['best']
+                };
+                return options[provider] || ['best'];
+            },
+
+            // Update batch qualities to be dynamic
+            updateBatchQualities() {
+                const allQualities = new Set(['best']);
+                this.fetchedVideos.forEach(video => {
+                    if (video.qualities && Array.isArray(video.qualities)) {
+                        video.qualities.forEach(q => allQualities.add(q));
+                    }
+                });
+                // Sort them logically: 'best' first, then numerically descending
+                const sorted = Array.from(allQualities).sort((a, b) => {
+                    if (a === 'best') return -1;
+                    if (b === 'best') return 1;
+                    const numA = parseInt(a.replace(/[p best half worst]/g, '')) || 0;
+                    const numB = parseInt(b.replace(/[p best half worst]/g, '')) || 0;
+                    return numB - numA;
+                });
+                this.batchQualities = sorted;
             }
         }
     }
 
     function pornFetchPage() {
         return {
-            downloads: {{ download_history | tojson }},
+            downloads: JSON.parse(`{{ download_history | tojson | safe }}`),
             activeDownloads: [],
             _lastActiveDownloadCount: 0,
             fetchedVideos: [],
@@ -722,6 +774,13 @@
                     if (response.ok) {
                         this.videoInfo = result;
                         this.videoInfo.url = url; // Add the original URL to the info object
+                        this.videoInfo.provider = this.detectProvider(url); // Detect provider for quality options
+                        
+                        // If no qualities returned, use provider defaults
+                        if (!this.videoInfo.qualities || this.videoInfo.qualities.length === 0) {
+                            this.videoInfo.qualities = this.getDefaultQualityOptions(this.videoInfo.provider);
+                            this.showAlert(`No qualities detected for this provider (${this.videoInfo.provider}). Using defaults.`, true);
+                        }
                     } else {
                         this.showAlert(result.error || 'Failed to fetch video info.', true);
                     }
